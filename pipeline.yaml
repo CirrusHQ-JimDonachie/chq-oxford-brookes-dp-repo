@@ -361,6 +361,14 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ProjectSlug}-${Environment}/*'
                   - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ProjectSlug}-${Environment}-*/*'
                   - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*'
+              # engine.yaml's TransformFunction is AWS::Serverless::Function -
+              # confirmed directly, the SAM transform needs its own explicit
+              # CreateChangeSet grant on this account-agnostic transform ARN,
+              # separate from any stack/changeSet ARN above.
+              - Sid: UseServerlessTransform
+                Effect: Allow
+                Action: 'cloudformation:CreateChangeSet'
+                Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31'
               - Sid: ReadNestedTemplateBodies
                 Effect: Allow
                 Action:
