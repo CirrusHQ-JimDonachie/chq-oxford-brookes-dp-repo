@@ -1,0 +1,733 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Deliverable 3.1 - IaC deployment pipeline. Deployed once, out of band, the
+  same way the ECR repository and the SAM artifact bucket are (see
+  DEPLOYMENT.md) - it is not one of main.yaml's nested stacks, because it has
+  to exist before main.yaml can be deployed through it at all. Builds and
+  deploys every other deliverable from this same repo on every push to the
+  tracked branch.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming
+        Parameters:
+          - ProjectSlug
+          - Environment
+      - Label:
+          default: Source
+        Parameters:
+          - RepoConnectionArn
+          - RepoOwner
+          - RepoName
+          - RepoBranch
+      - Label:
+          default: Build inputs (created out of band, see DEPLOYMENT.md)
+        Parameters:
+          - CfnArtifactsBucketName
+          - TransformEcrRepositoryName
+          - KmsKeyArn
+    ParameterLabels:
+      ProjectSlug:
+        default: Project slug
+      Environment:
+        default: Environment
+      RepoConnectionArn:
+        default: CodeConnections connection ARN
+      RepoOwner:
+        default: GitHub owner/org
+      RepoName:
+        default: GitHub repository name
+      RepoBranch:
+        default: Branch to build from
+      CfnArtifactsBucketName:
+        default: SAM/CFN artifact bucket name
+      TransformEcrRepositoryName:
+        default: Transform function ECR repository name
+      KmsKeyArn:
+        default: Data key ARN
+
+Parameters:
+  ProjectSlug:
+    Type: String
+    Description: Short lowercase name used to build every resource name. Matches main.yaml's ProjectSlug.
+    AllowedPattern: '^[a-z0-9-]{3,20}$'
+    ConstraintDescription: 3 to 20 characters, lowercase letters, digits and hyphens.
+  Environment:
+    Type: String
+    Description: Environment this pipeline deploys into. Matches main.yaml's Environment.
+    AllowedValues:
+      - dev
+      - test
+      - prod
+  RepoConnectionArn:
+    Type: String
+    Description: >-
+      ARN of the CodeConnections connection to the GitHub repo, already created
+      and authorised out of band (the GitHub App install is a manual,
+      one-person step - CodeConnections has no API for it).
+    AllowedPattern: '^arn:aws[a-z-]*:codeconnections:[a-z0-9-]+:[0-9]{12}:connection/.+$'
+    ConstraintDescription: A CodeConnections connection ARN.
+  RepoOwner:
+    Type: String
+    Description: GitHub organisation or user that owns the repository.
+  RepoName:
+    Type: String
+    Description: Repository name (without the owner prefix).
+  RepoBranch:
+    Type: String
+    Description: Branch the pipeline triggers on and deploys from.
+    Default: main
+  CfnArtifactsBucketName:
+    Type: String
+    Description: >-
+      Existing S3 bucket sam package uploads nested-template bodies to. Not
+      stack-managed (same reason the ECR repository below isn't) - create it
+      once, out of band, before the first pipeline run.
+    AllowedPattern: '^[a-z0-9.-]{3,63}$'
+  TransformEcrRepositoryName:
+    Type: String
+    Description: >-
+      Existing ECR repository the transform function's image is pushed to.
+      Not stack-managed - create it once, out of band, before the first
+      pipeline run (DEPLOYMENT.md has the exact command).
+  KmsKeyArn:
+    Type: String
+    Description: >-
+      ARN of the data key created by main.yaml's FoundationStack. Encrypts
+      this pipeline's own artifact bucket and log group. Passed in as a
+      parameter rather than imported, because this stack has to be able to
+      exist before FoundationStack does on a fresh account.
+    AllowedPattern: '^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/.+$'
+
+Resources:
+  # ---------- Artifacts ----------
+  PipelineArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectSlug}-${Environment}-pipeline-artifacts-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KmsKeyArn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-artifacts
+            Status: Enabled
+            ExpirationInDays: 30
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  PipelineArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref PipelineArtifactsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt PipelineArtifactsBucket.Arn
+              - !Sub '${PipelineArtifactsBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+          - Sid: DenyUploadsWithoutKeyEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub '${PipelineArtifactsBucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                's3:x-amz-server-side-encryption': 'aws:kms'
+
+  # Not encrypted with KmsKeyArn: that key's CloudWatch Logs statement
+  # (foundation.yaml) is scoped by encryption context to two specific existing
+  # log group ARNs - confirmed directly, CloudWatch Logs was denied use of the
+  # key for this one. Coupling foundation.yaml to a pipeline-specific log
+  # group name would be backwards; build logs aren't app data anyway, so
+  # default (AWS-owned key) encryption is the right call here, not a gap.
+  CodeBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/codebuild/${ProjectSlug}-${Environment}-build'
+      RetentionInDays: 30
+
+  # ---------- IAM: three roles, deliberately separate ----------
+  PipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: pipeline-orchestration
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadWriteOwnArtifacts
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:PutObject'
+                Resource: !Sub '${PipelineArtifactsBucket.Arn}/*'
+              - Sid: ListOwnArtifactsBucket
+                Effect: Allow
+                Action:
+                  - 's3:GetBucketVersioning'
+                  - 's3:ListBucket'
+                Resource: !GetAtt PipelineArtifactsBucket.Arn
+              - Sid: UseDataKey
+                Effect: Allow
+                Action:
+                  - 'kms:Decrypt'
+                  - 'kms:GenerateDataKey'
+                Resource: !Ref KmsKeyArn
+              - Sid: UseTheConnection
+                Effect: Allow
+                Action: 'codeconnections:UseConnection'
+                Resource: !Ref RepoConnectionArn
+              - Sid: RunTheBuild
+                Effect: Allow
+                Action:
+                  - 'codebuild:StartBuild'
+                  - 'codebuild:BatchGetBuilds'
+                Resource: !GetAtt BuildProject.Arn
+              # Hand off to the execution role only - never any other role.
+              - Sid: PassOnlyTheExecRole
+                Effect: Allow
+                Action: 'iam:PassRole'
+                Resource: !GetAtt IacExecRole.Arn
+              - Sid: RunTheDeploy
+                Effect: Allow
+                Action:
+                  - 'cloudformation:CreateStack'
+                  - 'cloudformation:UpdateStack'
+                  - 'cloudformation:DescribeStacks'
+                  - 'cloudformation:DescribeStackEvents'
+                  - 'cloudformation:CreateChangeSet'
+                  - 'cloudformation:DescribeChangeSet'
+                  - 'cloudformation:ExecuteChangeSet'
+                  - 'cloudformation:DeleteChangeSet'
+                  - 'cloudformation:GetTemplateSummary'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ProjectSlug}-${Environment}/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*'
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: build-and-push
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: WriteBuildLogs
+                Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !GetAtt CodeBuildLogGroup.Arn
+              - Sid: ReadWriteOwnArtifacts
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:PutObject'
+                Resource: !Sub '${PipelineArtifactsBucket.Arn}/*'
+              - Sid: ListOwnArtifactsBucket
+                Effect: Allow
+                Action: 's3:ListBucket'
+                Resource: !GetAtt PipelineArtifactsBucket.Arn
+              - Sid: UseDataKey
+                Effect: Allow
+                Action:
+                  - 'kms:Decrypt'
+                  - 'kms:GenerateDataKey'
+                Resource: !Ref KmsKeyArn
+              # sam package's own upload target - a different bucket, not
+              # stack-managed, same reason the ECR repository below isn't.
+              - Sid: WriteCfnArtifacts
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${CfnArtifactsBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${CfnArtifactsBucketName}/*'
+              # Docker login is account-level, not scoped to one repository -
+              # same gotcha DEPLOYMENT.md already documents for manual deploys.
+              - Sid: EcrLogin
+                Effect: Allow
+                Action: 'ecr:GetAuthorizationToken'
+                Resource: '*'
+              - Sid: PushTransformImage
+                Effect: Allow
+                Action:
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:InitiateLayerUpload'
+                  - 'ecr:UploadLayerPart'
+                  - 'ecr:CompleteLayerUpload'
+                  - 'ecr:PutImage'
+                  - 'ecr:BatchGetImage'
+                Resource: !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${TransformEcrRepositoryName}'
+
+  # PoC-scoped, not production-scoped: broad but account-bounded rather than
+  # resource-by-resource, because most of what it creates gets CloudFormation-
+  # generated names it cannot know ahead of time (nested-stack IAM roles,
+  # DynamoDB tables, log groups). Revisit before this runs against the
+  # Customer's own account - see DEPLOYMENT.md's "What the deploy role needs"
+  # for the gotcha permissions this list already folds in.
+  IacExecRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectSlug}-${Environment}-iac-exec'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: deploy-every-nested-stack
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: OrchestrateNestedStacks
+                Effect: Allow
+                Action:
+                  - 'cloudformation:CreateStack'
+                  - 'cloudformation:UpdateStack'
+                  - 'cloudformation:DeleteStack'
+                  - 'cloudformation:DescribeStacks'
+                  - 'cloudformation:DescribeStackEvents'
+                  - 'cloudformation:DescribeStackResource'
+                  - 'cloudformation:DescribeStackResources'
+                  - 'cloudformation:GetTemplate'
+                  - 'cloudformation:GetTemplateSummary'
+                  - 'cloudformation:ListStackResources'
+                  - 'cloudformation:CreateChangeSet'
+                  - 'cloudformation:DescribeChangeSet'
+                  - 'cloudformation:ExecuteChangeSet'
+                  - 'cloudformation:DeleteChangeSet'
+                  - 'cloudformation:ContinueUpdateRollback'
+                  - 'cloudformation:ValidateTemplate'
+                  - 'cloudformation:TagResource'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ProjectSlug}-${Environment}/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ProjectSlug}-${Environment}-*/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*'
+              - Sid: ReadNestedTemplateBodies
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${CfnArtifactsBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${CfnArtifactsBucketName}/*'
+              - Sid: ManageAppBuckets
+                Effect: Allow
+                Action:
+                  - 's3:CreateBucket'
+                  - 's3:DeleteBucket'
+                  - 's3:PutBucketPolicy'
+                  - 's3:DeleteBucketPolicy'
+                  - 's3:GetBucketPolicy'
+                  - 's3:PutBucketTagging'
+                  - 's3:PutEncryptionConfiguration'
+                  - 's3:PutBucketVersioning'
+                  - 's3:PutLifecycleConfiguration'
+                  - 's3:PutBucketPublicAccessBlock'
+                  - 's3:PutBucketOwnershipControls'
+                  - 's3:PutBucketNotification'
+                  - 's3:GetBucketNotification'
+                  - 's3:GetBucketLocation'
+                  - 's3:GetEncryptionConfiguration'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ProjectSlug}-${Environment}-*'
+              - Sid: ManageS3Tables
+                Effect: Allow
+                Action:
+                  - 's3tables:CreateTableBucket'
+                  - 's3tables:DeleteTableBucket'
+                  - 's3tables:GetTableBucket'
+                  - 's3tables:CreateNamespace'
+                  - 's3tables:DeleteNamespace'
+                  - 's3tables:GetNamespace'
+                  - 's3tables:ListNamespaces'
+                  - 's3tables:ListTableBuckets'
+                  - 's3tables:PutTableBucketPolicy'
+                  - 's3tables:TagResource'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${ProjectSlug}-${Environment}-*'
+              - Sid: ManageDynamoDbTables
+                Effect: Allow
+                Action:
+                  - 'dynamodb:CreateTable'
+                  - 'dynamodb:UpdateTable'
+                  - 'dynamodb:DeleteTable'
+                  - 'dynamodb:DescribeTable'
+                  - 'dynamodb:DescribeTimeToLive'
+                  - 'dynamodb:UpdateTimeToLive'
+                  - 'dynamodb:DescribeContinuousBackups'
+                  - 'dynamodb:UpdateContinuousBackups'
+                  - 'dynamodb:TagResource'
+                Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*'
+              - Sid: ManageKmsKey
+                Effect: Allow
+                Action:
+                  - 'kms:CreateKey'
+                  - 'kms:DescribeKey'
+                  - 'kms:PutKeyPolicy'
+                  - 'kms:GetKeyPolicy'
+                  - 'kms:EnableKeyRotation'
+                  - 'kms:ScheduleKeyDeletion'
+                  - 'kms:TagResource'
+                  - 'kms:CreateAlias'
+                  - 'kms:DeleteAlias'
+                  - 'kms:UpdateAlias'
+                  - 'kms:ListAliases'
+                  # The gotcha set DEPLOYMENT.md already documents: needed to
+                  # create/update the encrypted event bus and every rule on it.
+                  - 'kms:GenerateDataKeyWithoutPlaintext'
+                  - 'kms:Decrypt'
+                  - 'kms:Encrypt'
+                  - 'kms:ReEncryptFrom'
+                  - 'kms:ReEncryptTo'
+                Resource: '*'
+              - Sid: ManageLambdaFunction
+                Effect: Allow
+                Action:
+                  - 'lambda:CreateFunction'
+                  - 'lambda:UpdateFunctionCode'
+                  - 'lambda:UpdateFunctionConfiguration'
+                  - 'lambda:DeleteFunction'
+                  - 'lambda:GetFunction'
+                  - 'lambda:GetFunctionConfiguration'
+                  - 'lambda:GetPolicy'
+                  - 'lambda:AddPermission'
+                  - 'lambda:RemovePermission'
+                  - 'lambda:TagResource'
+                  - 'lambda:ListVersionsByFunction'
+                Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectSlug}-${Environment}-*'
+              - Sid: ManageAppRoles
+                Effect: Allow
+                Action:
+                  - 'iam:CreateRole'
+                  - 'iam:DeleteRole'
+                  - 'iam:GetRole'
+                  - 'iam:PutRolePolicy'
+                  - 'iam:DeleteRolePolicy'
+                  - 'iam:GetRolePolicy'
+                  - 'iam:ListRolePolicies'
+                  - 'iam:UpdateAssumeRolePolicy'
+                  - 'iam:TagRole'
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*'
+              - Sid: PassAppRoles
+                Effect: Allow
+                Action: 'iam:PassRole'
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*'
+                Condition:
+                  StringEquals:
+                    'iam:PassedToService':
+                      - lambda.amazonaws.com
+                      - apigateway.amazonaws.com
+                      - states.amazonaws.com
+                      - scheduler.amazonaws.com
+                      - events.amazonaws.com
+              - Sid: ManageLogGroups
+                Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:DeleteLogGroup'
+                  - 'logs:PutRetentionPolicy'
+                  - 'logs:DescribeLogGroups'
+                  - 'logs:TagResource'
+                  - 'logs:AssociateKmsKey'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*/${ProjectSlug}-${Environment}-*'
+              - Sid: ManageQueuesAndTopics
+                Effect: Allow
+                Action:
+                  - 'sqs:CreateQueue'
+                  - 'sqs:DeleteQueue'
+                  - 'sqs:GetQueueAttributes'
+                  - 'sqs:SetQueueAttributes'
+                  - 'sqs:TagQueue'
+                  - 'sns:CreateTopic'
+                  - 'sns:DeleteTopic'
+                  - 'sns:GetTopicAttributes'
+                  - 'sns:SetTopicAttributes'
+                  - 'sns:Subscribe'
+                  - 'sns:Unsubscribe'
+                  - 'sns:TagResource'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${ProjectSlug}-${Environment}-*'
+                  - !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectSlug}-${Environment}-*'
+              - Sid: ManageEventBridge
+                Effect: Allow
+                Action:
+                  - 'events:CreateEventBus'
+                  - 'events:DeleteEventBus'
+                  - 'events:DescribeEventBus'
+                  - 'events:PutRule'
+                  - 'events:DeleteRule'
+                  - 'events:DescribeRule'
+                  - 'events:PutTargets'
+                  - 'events:RemoveTargets'
+                  - 'events:TagResource'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/${ProjectSlug}-${Environment}-*'
+                  - !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${ProjectSlug}-${Environment}-*/*'
+              # Athena/Glue/Lake Formation/S3 Tables catalog federation - the
+              # account-level singletons and the full 5-ARN Iceberg REST
+              # resource list DEPLOYMENT.md documents (catalog, catalog/
+              # s3tablescatalog, catalog/bucket, database, table).
+              - Sid: ManageAthenaWorkgroup
+                Effect: Allow
+                Action:
+                  - 'athena:CreateWorkGroup'
+                  - 'athena:UpdateWorkGroup'
+                  - 'athena:DeleteWorkGroup'
+                  - 'athena:GetWorkGroup'
+                  - 'athena:TagResource'
+                Resource: !Sub 'arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${ProjectSlug}-${Environment}*'
+              - Sid: ManageGlueCatalogAndDatabases
+                Effect: Allow
+                Action:
+                  - 'glue:CreateCatalog'
+                  - 'glue:GetCatalog'
+                  - 'glue:GetCatalogs'
+                  - 'glue:GetDatabase'
+                  - 'glue:GetDatabases'
+                  - 'glue:CreateDatabase'
+                  - 'glue:DeleteDatabase'
+                  - 'glue:GetTable'
+                  - 'glue:GetTables'
+                  - 'glue:CreateTable'
+                  - 'glue:UpdateTable'
+                  - 'glue:DeleteTable'
+                  - 'glue:TagResource'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog/*'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/*'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/*'
+              - Sid: ManageLakeFormation
+                Effect: Allow
+                Action:
+                  - 'lakeformation:RegisterResource'
+                  - 'lakeformation:RegisterResourceWithPrivilegedAccess'
+                  - 'lakeformation:DeregisterResource'
+                  - 'lakeformation:GrantPermissions'
+                  - 'lakeformation:RevokePermissions'
+                  - 'lakeformation:ListPermissions'
+                  - 'lakeformation:PutDataLakeSettings'
+                  - 'lakeformation:GetDataLakeSettings'
+                Resource: '*'
+              - Sid: ManageQuickSightDataSource
+                Effect: Allow
+                Action:
+                  - 'quicksight:CreateDataSource'
+                  - 'quicksight:UpdateDataSource'
+                  - 'quicksight:DeleteDataSource'
+                  - 'quicksight:DescribeDataSource'
+                  - 'quicksight:DescribeDataSourcePermissions'
+                  - 'quicksight:UpdateDataSourcePermissions'
+                  - 'quicksight:PassDataSource'
+                Resource: !Sub 'arn:${AWS::Partition}:quicksight:${AWS::Region}:${AWS::AccountId}:datasource/${ProjectSlug}-${Environment}-*'
+              - Sid: ManageStepFunctionsAndScheduler
+                Effect: Allow
+                Action:
+                  - 'states:CreateStateMachine'
+                  - 'states:UpdateStateMachine'
+                  - 'states:DeleteStateMachine'
+                  - 'states:DescribeStateMachine'
+                  - 'states:TagResource'
+                  - 'scheduler:CreateSchedule'
+                  - 'scheduler:UpdateSchedule'
+                  - 'scheduler:DeleteSchedule'
+                  - 'scheduler:GetSchedule'
+                  - 'scheduler:TagResource'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${ProjectSlug}-${Environment}-*'
+                  - !Sub 'arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/${ProjectSlug}-${Environment}-*'
+              - Sid: ManageApiGateway
+                Effect: Allow
+                Action:
+                  - 'apigateway:GET'
+                  - 'apigateway:POST'
+                  - 'apigateway:PUT'
+                  - 'apigateway:PATCH'
+                  - 'apigateway:DELETE'
+                Resource: '*'
+              - Sid: ManageCognito
+                Effect: Allow
+                Action:
+                  - 'cognito-idp:CreateUserPool'
+                  - 'cognito-idp:UpdateUserPool'
+                  - 'cognito-idp:DeleteUserPool'
+                  - 'cognito-idp:DescribeUserPool'
+                  - 'cognito-idp:CreateUserPoolClient'
+                  - 'cognito-idp:UpdateUserPoolClient'
+                  - 'cognito-idp:DeleteUserPoolClient'
+                  - 'cognito-idp:CreateGroup'
+                  - 'cognito-idp:DeleteGroup'
+                  - 'cognito-idp:TagResource'
+                Resource: !Sub 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*'
+              - Sid: ManageCloudWatchAlarms
+                Effect: Allow
+                Action:
+                  - 'cloudwatch:PutMetricAlarm'
+                  - 'cloudwatch:DeleteAlarms'
+                  - 'cloudwatch:DescribeAlarms'
+                  - 'cloudwatch:TagResource'
+                Resource: !Sub 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectSlug}-${Environment}-*'
+
+  # ---------- Build ----------
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectSlug}-${Environment}-build'
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      TimeoutInMinutes: 30
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        # The transform function's image build needs Docker-in-Docker.
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: CFN_ARTIFACTS_BUCKET
+            Value: !Ref CfnArtifactsBucketName
+          - Name: ECR_REPOSITORY
+            Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${TransformEcrRepositoryName}'
+          - Name: AWS_REGION
+            Value: !Ref 'AWS::Region'
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref CodeBuildLogGroup
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+      EncryptionKey: !Ref KmsKeyArn
+
+  # ---------- Pipeline ----------
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub '${ProjectSlug}-${Environment}-pipeline'
+      RoleArn: !GetAtt PipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactsBucket
+        EncryptionKey:
+          Id: !Ref KmsKeyArn
+          Type: KMS
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              Configuration:
+                ConnectionArn: !Ref RepoConnectionArn
+                FullRepositoryId: !Sub '${RepoOwner}/${RepoName}'
+                BranchName: !Ref RepoBranch
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BuildProject
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: !Sub '${ProjectSlug}-${Environment}'
+                TemplatePath: 'BuildOutput::packaged.yaml'
+                TemplateConfiguration: 'BuildOutput::template-configuration.json'
+                Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+                RoleArn: !GetAtt IacExecRole.Arn
+              InputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+
+Outputs:
+  PipelineName:
+    Description: Name of the CodePipeline pipeline.
+    Value: !Ref Pipeline
+  IacExecRoleArn:
+    Description: >-
+      ARN to set as main.yaml's DeployRoleArn parameter once this stack
+      exists, so the app stack's Lake Formation admin matches who actually
+      deploys it from here on.
+    Value: !GetAtt IacExecRole.Arn
+  PipelineArtifactsBucketName:
+    Description: Name of the pipeline's own artifact bucket.
+    Value: !Ref PipelineArtifactsBucket

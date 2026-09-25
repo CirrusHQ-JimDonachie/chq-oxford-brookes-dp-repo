@@ -366,7 +366,11 @@ reset to `OK` (with a recovery notification, if configured).
 
 Only a Lake Formation data-lake administrator can currently query the
 `s3tablescatalog` federated catalog directly (see "One thing worth knowing"
-below) — as that principal:
+below) — as that principal. Once the pipeline is the one deploying (`pipeline.yaml`,
+`DeployRoleArn` = `IacExecRole`), that principal is `IacExecRole`, not a human
+SSO session — this step then needs assuming that role (its trust policy would
+need widening to allow it) or a temporary second admin entry, not a plain
+interactive AWS CLI session:
 
 ```bash
 QID=$(aws athena start-query-execution --region "$REGION" \

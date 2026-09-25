@@ -9,7 +9,7 @@
   },
   {
     "ParameterKey": "DeployRoleArn",
-    "ParameterValue": "arn:aws:iam::421454275355:role/aws-reserved/sso.amazonaws.com/eu-west-1/AWSReservedSSO_chqisb_IsbUsersPS_892d1cda6950946c"
+    "ParameterValue": "arn:aws:iam::421454275355:role/building-data-dev-iac-exec"
   },
   {
     "ParameterKey": "QuickSightServiceRoleArn",

@@ -1,0 +1,43 @@
+version: 0.2
+
+# Runs the same sam build/sam package sequence DEPLOYMENT.md documents for a
+# manual deploy - nothing pipeline-specific about the build itself, only
+# about getting its two outputs (the packaged template and the parameter
+# overrides) into the shape the CloudFormation deploy action expects.
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.13
+    commands:
+      - pip install --quiet aws-sam-cli
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REPOSITORY"
+  build:
+    commands:
+      - sam build --template-file main.yaml --region "$AWS_REGION"
+      - >
+        sam package
+        --s3-bucket "$CFN_ARTIFACTS_BUCKET"
+        --image-repository "$ECR_REPOSITORY"
+        --output-template-file packaged.yaml
+        --region "$AWS_REGION"
+  post_build:
+    commands:
+      # CodePipeline's CloudFormation deploy action wants parameter overrides
+      # as {"Parameters": {"Key": "Value", ...}}, not parameters.json's
+      # [{"ParameterKey": ..., "ParameterValue": ...}, ...] array shape.
+      - >
+        python3 -c "
+        import json
+        params = json.load(open('parameters.json'))
+        out = {p['ParameterKey']: p['ParameterValue'] for p in params}
+        json.dump({'Parameters': out}, open('template-configuration.json', 'w'))
+        "
+
+artifacts:
+  files:
+    - packaged.yaml
+    - template-configuration.json
+  discard-paths: yes
