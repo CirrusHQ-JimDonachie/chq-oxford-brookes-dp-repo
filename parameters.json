@@ -1,0 +1,62 @@
+[
+  {
+    "ParameterKey": "ProjectSlug",
+    "ParameterValue": "building-data"
+  },
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "dev"
+  },
+  {
+    "ParameterKey": "DeployRoleArn",
+    "ParameterValue": "arn:aws:iam::421454275355:role/aws-reserved/sso.amazonaws.com/eu-west-1/AWSReservedSSO_chqisb_IsbUsersPS_892d1cda6950946c"
+  },
+  {
+    "ParameterKey": "QuickSightServiceRoleArn",
+    "ParameterValue": "arn:aws:iam::421454275355:role/service-role/aws-quicksight-service-role-v0"
+  },
+  {
+    "ParameterKey": "QuickSightPrincipalArn",
+    "ParameterValue": "arn:aws:quicksight:eu-west-2:421454275355:user/default/AWSReservedSSO_chqisb_IsbUsersPS_892d1cda6950946c/jim.donachie@cirrushq.com"
+  },
+  {
+    "ParameterKey": "DataProviderPrincipalArn",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "CuratedNamespace",
+    "ParameterValue": "building_data"
+  },
+  {
+    "ParameterKey": "RawRetentionDays",
+    "ParameterValue": "30"
+  },
+  {
+    "ParameterKey": "ClaimTtlDays",
+    "ParameterValue": "14"
+  },
+  {
+    "ParameterKey": "ApiEntityType",
+    "ParameterValue": "room"
+  },
+  {
+    "ParameterKey": "AlertEmail",
+    "ParameterValue": "jim.donachie@cirrushq.com"
+  },
+  {
+    "ParameterKey": "AlertEventSource",
+    "ParameterValue": "building-data.transform"
+  },
+  {
+    "ParameterKey": "DataQualityAlarmPeriodSeconds",
+    "ParameterValue": "300"
+  },
+  {
+    "ParameterKey": "LogRetentionDays",
+    "ParameterValue": "1"
+  },
+  {
+    "ParameterKey": "LogLevel",
+    "ParameterValue": "DEBUG"
+  }
+]

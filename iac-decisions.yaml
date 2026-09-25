@@ -1,0 +1,28 @@
+project: oxford-brookes-building-data-poc
+version: 1
+last_updated: "2026-09-16"
+context:
+  environment: dev
+  region: eu-west-2
+  resource_tags: none
+  pipeline: customer-supplied
+security:
+  s3.deny_insecure_transport: true
+  s3.deny_unencrypted_put: true
+  s3.abort_incomplete_multipart_days: 7
+  kms.service_principal_scoping: true
+  kms.log_group_encryption_context: true
+  sns.cmk_with_publisher_grants: true
+  iam.resource_scoped_policies: true
+  iam.confused_deputy_conditions: true
+  quicksight.scope: athena_data_source_only
+  lambda.tracing: false
+artifacts:
+  lambda_fn_transform: lambda/fn-transform/app
+singletons:
+  glue_catalog: create
+  lakeformation_data_lake_settings: create
+  apigateway_account: create
+cloudformation:
+  template_structure: nested
+  use_sam_transforms: true

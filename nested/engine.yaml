@@ -1,0 +1,794 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Transform engine: the raw landing bucket, the function it triggers, the config
+  and state tables, the alerting bus and topic, and the alarms that watch them.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming
+        Parameters:
+          - ProjectSlug
+          - Environment
+      - Label:
+          default: Shared resources
+        Parameters:
+          - KmsKeyArn
+          - CuratedTableBucketName
+          - CuratedNamespaceName
+      - Label:
+          default: Ingestion
+        Parameters:
+          - DataProviderPrincipalArn
+          - RawRetentionDays
+          - ClaimTtlDays
+      - Label:
+          default: Alerting
+        Parameters:
+          - AlertEmail
+          - AlertEventSource
+          - DataQualityAlarmPeriodSeconds
+      - Label:
+          default: Logging
+        Parameters:
+          - LogRetentionDays
+          - LogLevel
+    ParameterLabels:
+      ProjectSlug:
+        default: Project slug
+      Environment:
+        default: Environment
+      KmsKeyArn:
+        default: Data key ARN
+      CuratedTableBucketName:
+        default: Curated table bucket name
+      CuratedNamespaceName:
+        default: Curated table namespace
+      DataProviderPrincipalArn:
+        default: File-drop principal ARN (optional)
+      RawRetentionDays:
+        default: Raw and error object retention (days)
+      ClaimTtlDays:
+        default: Delivery claim retention (days)
+      AlertEmail:
+        default: Alert e-mail address
+      AlertEventSource:
+        default: Alert event source name
+      DataQualityAlarmPeriodSeconds:
+        default: Data-quality alarm period (seconds)
+      LogRetentionDays:
+        default: Log retention (days)
+      LogLevel:
+        default: Function log level
+
+Parameters:
+  ProjectSlug:
+    Type: String
+    Description: Short lowercase name used to build every resource name.
+    AllowedPattern: '^[a-z0-9-]{3,20}$'
+    ConstraintDescription: 3 to 20 characters, lowercase letters, digits and hyphens.
+  Environment:
+    Type: String
+    Description: Environment this stack deploys; part of every resource name.
+    AllowedValues:
+      - dev
+      - test
+      - prod
+  KmsKeyArn:
+    Type: String
+    Description: ARN of the key that encrypts the landing bucket, both tables, the queue, the topic, the bus and the log group.
+    AllowedPattern: '^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/.+$'
+    ConstraintDescription: A KMS key ARN.
+  CuratedTableBucketName:
+    Type: String
+    Description: Name of the curated table bucket. Forms the catalog and warehouse identifiers the function writes through.
+    AllowedPattern: '^[a-z0-9-]{3,63}$'
+    ConstraintDescription: 3 to 63 characters, lowercase letters, digits and hyphens.
+  CuratedNamespaceName:
+    Type: String
+    Description: Namespace inside the curated table bucket that the mapping configs target.
+    AllowedPattern: '^[a-z0-9_]{1,255}$'
+    ConstraintDescription: Lowercase letters, digits and underscores.
+  DataProviderPrincipalArn:
+    Type: String
+    Description: >-
+      Optional. ARN of the principal that drops files into the raw prefix from
+      another account. Leave empty when the uploader is in this account and is
+      granted through IAM.
+    Default: ''
+  RawRetentionDays:
+    Type: Number
+    Description: Days a dropped file and its error output stay in the landing bucket before expiry.
+    Default: 30
+    MinValue: 1
+    MaxValue: 3650
+  ClaimTtlDays:
+    Type: Number
+    Description: Days the transform function keeps its record of a processed file version.
+    Default: 14
+    MinValue: 1
+    MaxValue: 365
+  AlertEmail:
+    Type: String
+    Description: E-mail address subscribed to the alert topic. The recipient must confirm the subscription before alerts are delivered.
+    MinLength: 3
+  AlertEventSource:
+    Type: String
+    Description: >-
+      Source field the transform function stamps on every threshold event, and
+      the value the routing rule matches on. One parameter feeds both so they
+      cannot drift apart.
+    Default: building-data.transform
+    AllowedPattern: '^[a-zA-Z0-9._-]{1,256}$'
+    ConstraintDescription: Letters, digits, dots, underscores and hyphens.
+  DataQualityAlarmPeriodSeconds:
+    Type: Number
+    Description: Window over which rejected records are counted before the data-quality alarm fires.
+    Default: 3600
+    AllowedValues:
+      - 300
+      - 900
+      - 1800
+      - 3600
+      - 21600
+      - 86400
+  LogRetentionDays:
+    Type: Number
+    Description: Retention for the transform function log group.
+    Default: 30
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1096
+      - 1827
+      - 2192
+      - 2557
+      - 2922
+      - 3288
+      - 3653
+  LogLevel:
+    Type: String
+    Description: Log level for the transform function. Drives both the function's log filter and the logging library, which have to agree or records are dropped.
+    Default: INFO
+    AllowedValues:
+      - DEBUG
+      - INFO
+      - WARN
+      - ERROR
+
+Conditions:
+  HasDataProviderPrincipal: !Not [!Equals [!Ref DataProviderPrincipalArn, '']]
+Transform: AWS::Serverless-2016-10-31
+
+Resources:
+
+
+  # ---------- Ingestion ----------
+  RawLandingBucket:
+    Type: AWS::S3::Bucket
+    # S3 validates the invoke permission when the notification is configured, so
+    # the permission has to exist first.
+    DependsOn: RawBucketInvokePermission
+    Properties:
+      BucketName: !Sub '${ProjectSlug}-${Environment}-raw-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KmsKeyArn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      # The function keys its delivery claim on bucket, key and object version,
+      # so a bucket without versioning cannot tell a redelivery from a redrop.
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-dropped-files
+            Status: Enabled
+            Prefix: raw/
+            ExpirationInDays: !Ref RawRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: !Ref RawRetentionDays
+          - Id: expire-rejected-files
+            Status: Enabled
+            Prefix: error/
+            ExpirationInDays: !Ref RawRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: !Ref RawRetentionDays
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      NotificationConfiguration:
+        LambdaConfigurations:
+          # The function writes rejected files and records to error/ in this same
+          # bucket. Without the prefix filter each of those writes invokes it
+          # again.
+          - Event: 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: raw/
+            Function: !GetAtt TransformFunction.Arn
+
+  RawLandingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref RawLandingBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt RawLandingBucket.Arn
+              - !Sub '${RawLandingBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+          - Sid: DenyUploadsWithoutKeyEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub '${RawLandingBucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                's3:x-amz-server-side-encryption': 'aws:kms'
+          # Writes land only under the drop prefix; the listing covers the whole
+          # bucket, because a prefix condition on the same statement would also
+          # apply to the uploads, which carry no prefix to match.
+          - !If
+              - HasDataProviderPrincipal
+              - Sid: AllowFileDrop
+                Effect: Allow
+                Principal:
+                  AWS: !Ref DataProviderPrincipalArn
+                Action:
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !GetAtt RawLandingBucket.Arn
+                  - !Sub '${RawLandingBucket.Arn}/raw/*'
+              - !Ref 'AWS::NoValue'
+  # ---------- Transform function ----------
+  TransformLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      # Lambda creates this group itself on the first invocation, with the AWS
+      # owned key and no retention, and never sets either afterwards. Creating it
+      # here first is what gets the key and the retention onto it.
+      LogGroupName: !Sub '/aws/lambda/${ProjectSlug}-${Environment}-transform'
+      KmsKeyId: !Ref KmsKeyArn
+      RetentionInDays: !Ref LogRetentionDays
+
+  TransformFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: transform-engine
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # The landing bucket is named rather than referenced: the bucket's
+              # notification points at the function this role belongs to, so a
+              # reference here would close the loop.
+              - Sid: ReadDroppedObjects
+                Effect: Allow
+                Action: 's3:GetObject'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ProjectSlug}-${Environment}-raw-${AWS::AccountId}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ProjectSlug}-${Environment}-raw-${AWS::AccountId}/*'
+              - Sid: ReadDroppedObjectVersions
+                Effect: Allow
+                Action: 's3:GetObjectVersion'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ProjectSlug}-${Environment}-raw-${AWS::AccountId}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ProjectSlug}-${Environment}-raw-${AWS::AccountId}/*'
+              - Sid: WriteRejectedObjects
+                Effect: Allow
+                Action: 's3:PutObject'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ProjectSlug}-${Environment}-raw-${AWS::AccountId}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ProjectSlug}-${Environment}-raw-${AWS::AccountId}/*'
+              - Sid: DecryptWithDataKey
+                Effect: Allow
+                Action: 'kms:Decrypt'
+                Resource: !Ref KmsKeyArn
+              - Sid: GenerateDataKeys
+                Effect: Allow
+                Action: 'kms:GenerateDataKey'
+                Resource: !Ref KmsKeyArn
+              - Sid: ReadConfigAndState
+                Effect: Allow
+                Action: 'dynamodb:GetItem'
+                Resource:
+                  - !GetAtt ConfigTable.Arn
+                  - !GetAtt StateTable.Arn
+              - Sid: QueryConfigAndState
+                Effect: Allow
+                Action: 'dynamodb:Query'
+                Resource:
+                  - !GetAtt ConfigTable.Arn
+                  - !GetAtt StateTable.Arn
+              - Sid: WriteStateItems
+                Effect: Allow
+                Action: 'dynamodb:PutItem'
+                Resource: !GetAtt StateTable.Arn
+              - Sid: UpdateStateItems
+                Effect: Allow
+                Action: 'dynamodb:UpdateItem'
+                Resource: !GetAtt StateTable.Arn
+              - Sid: DeleteStateItems
+                Effect: Allow
+                Action: 'dynamodb:DeleteItem'
+                Resource: !GetAtt StateTable.Arn
+              - Sid: PutThresholdEvents
+                Effect: Allow
+                Action: 'events:PutEvents'
+                Resource: !GetAtt AlertBus.Arn
+              # Every action below needs all five of these resource ARNs, not
+              # just the most specific one — this is AWS's own documented IAM
+              # policy for the Glue Iceberg REST endpoint against a federated
+              # S3 Tables catalog (see "Create an IAM role for your client" at
+              # https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-integrating-glue-endpoint.html),
+              # confirmed directly: the first real file drop failed once per
+              # missing catalog-level ARN (bare catalog, then s3tablescatalog,
+              # then the bucket-scoped catalog) until all three were present
+              # alongside the database and table ARNs already here.
+              - Sid: ReadCatalog
+                Effect: Allow
+                Action: 'glue:GetCatalog'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog/${CuratedTableBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}/*'
+              - Sid: ReadCuratedDatabase
+                Effect: Allow
+                Action:
+                  - 'glue:GetDatabase'
+                  - 'glue:GetDatabases'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog/${CuratedTableBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}/*'
+              - Sid: ReadCuratedTables
+                Effect: Allow
+                Action:
+                  - 'glue:GetTable'
+                  - 'glue:GetTables'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog/${CuratedTableBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}/*'
+              - Sid: CreateCuratedTables
+                Effect: Allow
+                Action: 'glue:CreateTable'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog/${CuratedTableBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}/*'
+              - Sid: EvolveCuratedTables
+                Effect: Allow
+                Action: 'glue:UpdateTable'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog/${CuratedTableBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}/*'
+              # Lake Formation vends the temporary credentials the Glue Iceberg
+              # REST endpoint uses to reach the table data. The action carries no
+              # resource-level scoping and AWS documents it with a wildcard; the
+              # effective scope is the Lake Formation grants below.
+              - Sid: VendCuratedDataCredentials
+                Effect: Allow
+                Action: 'lakeformation:GetDataAccess'
+                Resource: '*'
+              - Sid: WriteFunctionLogs
+                Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !GetAtt TransformLogGroup.Arn
+              # The failure destination is written under this role, not by the
+              # Lambda service on its own account.
+              - Sid: SendToDeadLetterQueue
+                Effect: Allow
+                Action: 'sqs:SendMessage'
+                Resource: !GetAtt TransformDeadLetterQueue.Arn
+
+  TransformFunction:
+    Type: AWS::Serverless::Function
+    # Image, not zip: the dependency set (pyarrow, pyiceberg and what it pulls
+    # in) runs to ~240 MB unpacked, within the 250 MB zip-package limit but
+    # only barely, and every pyarrow point release risks tipping over it. The
+    # container image's 10 GB limit removes the ceiling, and the build is a
+    # native pip install inside the image with no cross-platform wheel-tag
+    # matching to get wrong.
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ../lambda/fn-transform
+      DockerTag: latest
+    Properties:
+      # Fixed so it matches the name of the pre-created log group above.
+      FunctionName: !Sub '${ProjectSlug}-${Environment}-transform'
+      Description: Maps a dropped file into the curated tables, updates the current-state snapshot and raises threshold events.
+      PackageType: Image
+      Architectures:
+        - x86_64
+      # A 200000-row file is held as raw records, mapped records and one Arrow
+      # table at the same time, and the timeout was sized at this memory setting.
+      MemorySize: 1024
+      Timeout: 300
+      Role: !GetAtt TransformFunctionRole.Arn
+      KmsKeyArn: !Ref KmsKeyArn
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref TransformLogGroup
+        ApplicationLogLevel: !Ref LogLevel
+      # S3 invokes asynchronously, so there is no caller to return an error to.
+      # A file that fails every retry lands on the queue and raises the depth
+      # alarm; without the destination the drop is lost with no signal.
+      EventInvokeConfig:
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 3600
+        DestinationConfig:
+          OnFailure:
+            Type: SQS
+            Destination: !GetAtt TransformDeadLetterQueue.Arn
+      Environment:
+        Variables:
+          CONFIG_TABLE_NAME: !Ref ConfigTable
+          STATE_TABLE_NAME: !Ref StateTable
+          ALERT_EVENT_BUS_NAME: !Ref AlertBus
+          ALERT_EVENT_SOURCE: !Ref AlertEventSource
+          ICEBERG_CATALOG_URI: !Sub 'https://glue.${AWS::Region}.amazonaws.com/iceberg'
+          ICEBERG_WAREHOUSE: !Sub '${AWS::AccountId}:s3tablescatalog/${CuratedTableBucketName}'
+          # Paired with the raw/ notification filter above: rejected output has to
+          # land outside the prefix that triggers the function.
+          ERROR_PREFIX: 'error/'
+          METRICS_NAMESPACE: !Sub '${ProjectSlug}/${Environment}'
+          CLAIM_TTL_DAYS: !Sub '${ClaimTtlDays}'
+          POWERTOOLS_SERVICE_NAME: transform
+          POWERTOOLS_METRICS_NAMESPACE: !Sub '${ProjectSlug}/${Environment}'
+          POWERTOOLS_LOG_LEVEL: !Ref LogLevel
+
+  RawBucketInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref TransformFunction
+      Principal: s3.amazonaws.com
+      # Named rather than referenced, for the same reason as the role's bucket
+      # statements. A bucket ARN carries no account id, so the source account is
+      # what pins the owner.
+      SourceArn: !Sub 'arn:${AWS::Partition}:s3:::${ProjectSlug}-${Environment}-raw-${AWS::AccountId}'
+      SourceAccount: !Ref 'AWS::AccountId'
+
+
+
+  # ---------- Curated-store access ----------
+  # Lake Formation grants are written by the deploying principal, which has to be
+  # registered as a data lake administrator before this stack runs. An IAM allow
+  # without the matching grant here is a denial at the first curated write.
+  TransformFunctionDatabaseGrant:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt TransformFunctionRole.Arn
+      Resource:
+        Database:
+          CatalogId: !Sub '${AWS::AccountId}:s3tablescatalog/${CuratedTableBucketName}'
+          Name: !Ref CuratedNamespaceName
+      Permissions:
+        - CREATE_TABLE
+        - DESCRIBE
+      PermissionsWithGrantOption: []
+
+  TransformFunctionTableGrant:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt TransformFunctionRole.Arn
+      Resource:
+        Table:
+          CatalogId: !Sub '${AWS::AccountId}:s3tablescatalog/${CuratedTableBucketName}'
+          DatabaseName: !Ref CuratedNamespaceName
+          TableWildcard: {}
+      # The function appends rows and adds columns as source files gain fields.
+      Permissions:
+        - SELECT
+        - INSERT
+        - ALTER
+        - DESCRIBE
+      PermissionsWithGrantOption: []
+
+
+
+  # ---------- Configuration and state ----------
+  # Both tables retain on stack delete and on replacement. To take one out, remove
+  # the two policies and the deletion protection in a separate deploy, then delete.
+  ConfigTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref KmsKeyArn
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      DeletionProtectionEnabled: true
+
+  StateTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: entity_type
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+      # Only snapshot items carry entity_type, so this stays a sparse index over
+      # current state, not claims or alert state: one entity type per source's
+      # mapping config, listable without knowing each entity's key up front.
+      GlobalSecondaryIndexes:
+        - IndexName: EntityTypeIndex
+          KeySchema:
+            - AttributeName: entity_type
+              KeyType: HASH
+            - AttributeName: pk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref KmsKeyArn
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      DeletionProtectionEnabled: true
+      # Delivery claims carry their expiry in this attribute. Configured on any
+      # other name, or left off, claims accumulate for the life of the table.
+      # Snapshot and alert-state items carry no expiry.
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+
+  # ---------- Failure capture ----------
+  TransformDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: !Ref KmsKeyArn
+      KmsDataKeyReusePeriodSeconds: 300
+      MessageRetentionPeriod: 1209600
+
+
+  # ---------- Alerting ----------
+  AlertBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub '${ProjectSlug}-${Environment}-alerts'
+      # Creating or updating an encrypted bus, and every rule operation on it,
+      # needs the deploying principal to hold decrypt and data-key permissions on
+      # this key. Events that fail encryption or decryption are dropped unless the
+      # bus has a dead-letter queue, which this PoC does not configure.
+      KmsKeyIdentifier: !Ref KmsKeyArn
+
+  BreachRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Routes threshold breach and recovery events to the alert topic.
+      EventBusName: !Ref AlertBus
+      State: ENABLED
+      # These two detail types are the strings the function stamps on its events.
+      EventPattern:
+        source:
+          - !Ref AlertEventSource
+        detail-type:
+          - Threshold Breach
+          - Threshold Recovery
+      Targets:
+        - Id: alert-topic
+          Arn: !Ref AlertTopic
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectSlug}-${Environment}-alerts'
+      KmsMasterKeyId: !Ref KmsKeyArn
+
+  AlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref AlertTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowRuleToPublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: 'sns:Publish'
+            Resource: !Ref AlertTopic
+            Condition:
+              StringEquals:
+                'aws:SourceArn': !GetAtt BreachRule.Arn
+          # The alarms below all carry this name prefix, which is what the pattern
+          # matches; an alarm named outside it cannot publish here.
+          - Sid: AllowAlarmsToPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: 'sns:Publish'
+            Resource: !Ref AlertTopic
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+              ArnLike:
+                'aws:SourceArn': !Sub 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectSlug}-${Environment}-*'
+
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      # The subscription sits in PendingConfirmation until the recipient follows
+      # the link in the confirmation e-mail, and receives nothing until then.
+      # Further recipients are added in the console.
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+      TopicArn: !Ref AlertTopic
+
+
+
+  # ---------- Alarms ----------
+  # An alarm name cannot be changed. CloudWatch has no rename, so a new name is a
+  # new alarm with no history, and the topic policy above and the key policy both
+  # match on this prefix.
+  DeadLetterQueueDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectSlug}-${Environment}-transform-dlq-depth'
+      AlarmDescription: A dropped file failed every retry and is sitting on the dead-letter queue. Inspect it and redrive.
+      ActionsEnabled: true
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt TransformDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
+  TransformErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectSlug}-${Environment}-transform-errors'
+      AlarmDescription: The transform function failed an invocation. Check the function log group for the failure.
+      ActionsEnabled: true
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref TransformFunction
+      # A count rather than a rate: at the invocation volumes this PoC sees, a
+      # percentage threshold is mostly noise, so any failed invocation fires.
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+
+  RejectedRecordsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectSlug}-${Environment}-transform-rejected-records'
+      AlarmDescription: A dropped file carried records the mapping config rejected. The reason codes are in the error prefix of the landing bucket.
+      ActionsEnabled: true
+      # Matches the metrics namespace the function publishes under.
+      Namespace: !Sub '${ProjectSlug}/${Environment}'
+      # No dimensions: the function emits an undimensioned total alongside the
+      # per-source and per-reason series, because CloudWatch returns data only for
+      # dimension combinations that have been published and this alarm cannot wait
+      # for a source to reject something first.
+      MetricName: RejectedRecords
+      Statistic: Sum
+      Period: !Ref DataQualityAlarmPeriodSeconds
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+
+Outputs:
+  RawLandingBucketName:
+    Description: Name of the landing bucket the Customer drops files into.
+    Value: !Ref RawLandingBucket
+  StateTableName:
+    Description: Name of the state table the read API serves snapshots from.
+    Value: !Ref StateTable
+  StateTableArn:
+    Description: ARN of the state table, for the read API integration role.
+    Value: !GetAtt StateTable.Arn
+  AlertTopicArn:
+    Description: ARN of the topic that carries threshold alerts and alarm notifications.
+    Value: !Ref AlertTopic
+  TransformFunctionName:
+    Description: Name of the transform function.
+    Value: !Ref TransformFunction

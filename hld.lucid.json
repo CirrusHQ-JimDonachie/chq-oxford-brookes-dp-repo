@@ -1,0 +1,959 @@
+{
+  "_rebuild_hints": {
+    "lines": [
+      {
+        "source": "repo-connection",
+        "target": "pipeline"
+      },
+      {
+        "source": "pipeline",
+        "target": "build-project"
+      },
+      {
+        "source": "pipeline",
+        "target": "pipeline-artifacts"
+      },
+      {
+        "source": "build-project",
+        "target": "pipeline-artifacts"
+      },
+      {
+        "source": "data-raw",
+        "target": "fn-transform"
+      },
+      {
+        "source": "fn-transform",
+        "target": "data-curated"
+      },
+      {
+        "source": "fn-transform",
+        "target": "ddb-config"
+      },
+      {
+        "source": "fn-transform",
+        "target": "ddb-state"
+      },
+      {
+        "source": "fn-transform",
+        "target": "event-bus"
+      },
+      {
+        "source": "fn-transform",
+        "target": "dlq-transform"
+      },
+      {
+        "source": "event-bus",
+        "target": "alert-topic"
+      },
+      {
+        "source": "athena",
+        "target": "data-curated"
+      },
+      {
+        "source": "athena",
+        "target": "glue-catalog"
+      },
+      {
+        "source": "quicksight",
+        "target": "athena"
+      },
+      {
+        "source": "read-api",
+        "target": "ddb-state"
+      },
+      {
+        "source": "data-provider",
+        "target": "data-raw"
+      },
+      {
+        "source": "analytics-user",
+        "target": "quicksight"
+      },
+      {
+        "source": "alert-recipient",
+        "target": "alert-topic"
+      },
+      {
+        "source": "dashboard-client",
+        "target": "read-api"
+      },
+      {
+        "source": "source-repo",
+        "target": "repo-connection"
+      }
+    ],
+    "parents": {
+      "alert-topic": "region",
+      "athena": "region",
+      "athena-results": "region",
+      "build-project": "region",
+      "data-curated": "region",
+      "data-raw": "region",
+      "ddb-config": "region",
+      "ddb-state": "region",
+      "dlq-transform": "region",
+      "event-bus": "region",
+      "fn-transform": "region",
+      "glue-catalog": "region",
+      "pipeline": "region",
+      "pipeline-artifacts": "region",
+      "quicksight": "region",
+      "read-api": "region",
+      "repo-connection": "region"
+    },
+    "shape_order": [
+      "region",
+      "quicksight",
+      "athena",
+      "glue-catalog",
+      "data-raw",
+      "fn-transform",
+      "event-bus",
+      "dlq-transform",
+      "ddb-config",
+      "alert-topic",
+      "read-api",
+      "repo-connection",
+      "pipeline",
+      "build-project",
+      "pipeline-artifacts",
+      "athena-results",
+      "data-curated",
+      "ddb-state",
+      "data-provider",
+      "analytics-user",
+      "alert-recipient",
+      "dashboard-client",
+      "source-repo"
+    ]
+  },
+  "standard_import": {
+    "pages": [
+      {
+        "id": "page1",
+        "lines": [
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "repo-connection",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "pipeline",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-1",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "pipeline",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "build-project",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-2",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "pipeline",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "pipeline-artifacts",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-3",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "build-project",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "pipeline-artifacts",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-4",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "data-raw",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "fn-transform",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-5",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "fn-transform",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "data-curated",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-6",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "fn-transform",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "ddb-config",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-7",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "fn-transform",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "ddb-state",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-8",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "fn-transform",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "event-bus",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-9",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 1,
+                "y": 0.5
+              },
+              "shapeId": "fn-transform",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0,
+                "y": 0.5
+              },
+              "shapeId": "dlq-transform",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-10",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "event-bus",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "alert-topic",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-11",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "athena",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "data-curated",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-12",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "athena",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "glue-catalog",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-13",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "quicksight",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "athena",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-14",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "read-api",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "ddb-state",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-15",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "data-provider",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "data-raw",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-16",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "analytics-user",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "quicksight",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-17",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "alert-recipient",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "alert-topic",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-18",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "dashboard-client",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "read-api",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-19",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          },
+          {
+            "endpoint1": {
+              "position": {
+                "x": 0.5,
+                "y": 1
+              },
+              "shapeId": "source-repo",
+              "style": "none",
+              "type": "shapeEndpoint"
+            },
+            "endpoint2": {
+              "position": {
+                "x": 0.5,
+                "y": 0
+              },
+              "shapeId": "repo-connection",
+              "style": "arrow",
+              "type": "shapeEndpoint"
+            },
+            "id": "line-20",
+            "lineType": "elbow",
+            "stroke": {
+              "color": "#555555",
+              "style": "solid",
+              "width": 2
+            }
+          }
+        ],
+        "shapes": [
+          {
+            "boundingBox": {
+              "h": 1770,
+              "w": 3520,
+              "x": 0,
+              "y": 410
+            },
+            "className": "RegionAWS2024",
+            "id": "region",
+            "text": "oxford-brookes-building-data-poc \u2014 dev (eu-west-2)",
+            "type": "namedContainer"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 80,
+              "y": 530
+            },
+            "className": "ArchAmazonQuickSightAWS2024",
+            "id": "quicksight",
+            "text": "QuickSight (Amazon\nQuick) + Q",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 80,
+              "y": 1550
+            },
+            "className": "ArchAmazonAthenaAWS2024",
+            "id": "athena",
+            "text": "Athena",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 420,
+              "y": 850
+            },
+            "className": "ResAWSGlueDataCatalogAWS2024",
+            "id": "glue-catalog",
+            "text": "Glue Data Catalog\n(dataset registry)",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 980,
+              "y": 530
+            },
+            "className": "ArchAmazonSimpleStorageServiceAWS2024",
+            "id": "data-raw",
+            "text": "Raw landing bucket",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 980,
+              "y": 850
+            },
+            "className": "ArchAWSLambdaAWS2024",
+            "id": "fn-transform",
+            "text": "Config-driven\ntransform +\nthreshold engine",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 980,
+              "y": 1230
+            },
+            "className": "ArchAmazonEventBridgeAWS2024",
+            "id": "event-bus",
+            "text": "Alerting event bus",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 1320,
+              "y": 850
+            },
+            "className": "ArchAmazonSimpleQueueServiceAWS2024",
+            "id": "dlq-transform",
+            "text": "Transform\ndead-letter queue",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 1660,
+              "y": 1230
+            },
+            "className": "ArchAmazonDynamoDBAWS2024",
+            "id": "ddb-config",
+            "text": "Config &\nrules table",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 980,
+              "y": 1550
+            },
+            "className": "ArchAmazonSimpleNotificationServiceAWS2024",
+            "id": "alert-topic",
+            "text": "Alert notification\ntopic",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 2220,
+              "y": 1550
+            },
+            "className": "ArchAmazonAPIGatewayAWS2024",
+            "id": "read-api",
+            "text": "Read REST API\n(DynamoDB direct)",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 2780,
+              "y": 530
+            },
+            "className": "ArchAWSCodeStarAWS2024",
+            "id": "repo-connection",
+            "text": "CodeConnections\nconnection",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 2780,
+              "y": 850
+            },
+            "className": "ArchAWSCodePipelineAWS2024",
+            "id": "pipeline",
+            "text": "IaC deployment\npipeline",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 2780,
+              "y": 1230
+            },
+            "className": "ArchAWSCodeBuildAWS2024",
+            "id": "build-project",
+            "text": "CodeBuild project",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 2780,
+              "y": 1550
+            },
+            "className": "ArchAmazonSimpleStorageServiceAWS2024",
+            "id": "pipeline-artifacts",
+            "text": "Pipeline artifact\nbucket",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 3340,
+              "y": 530
+            },
+            "className": "ArchAmazonSimpleStorageServiceAWS2024",
+            "id": "athena-results",
+            "text": "Athena results\nbucket",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 420,
+              "y": 1930
+            },
+            "className": "ArchAmazonSimpleStorageServiceAWS2024",
+            "id": "data-curated",
+            "text": "Curated S3 Table\nbucket (Iceberg)",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 1660,
+              "y": 1930
+            },
+            "className": "ArchAmazonDynamoDBAWS2024",
+            "id": "ddb-state",
+            "text": "State &\nhot-store table",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 980,
+              "y": 0
+            },
+            "className": "ResUsers48LightAWS2024",
+            "id": "data-provider",
+            "text": "OBU data provider\n(Estates /\nTimetabling / IT /\nBMS SMEs)",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 80,
+              "y": 60
+            },
+            "className": "ResUsers48LightAWS2024",
+            "id": "analytics-user",
+            "text": "Estates analytics\nuser",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 1320,
+              "y": 60
+            },
+            "className": "ResUsers48LightAWS2024",
+            "id": "alert-recipient",
+            "text": "Estates /\nIT alert recipient",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 2220,
+              "y": 30
+            },
+            "className": "ResClient48LightAWS2024",
+            "id": "dashboard-client",
+            "text": "Customer-built\ndashboard /\nprototype client",
+            "type": "namedShape"
+          },
+          {
+            "boundingBox": {
+              "h": 120,
+              "w": 120,
+              "x": 2780,
+              "y": 60
+            },
+            "className": "ResClient48LightAWS2024",
+            "id": "source-repo",
+            "text": "Customer source\nrepository (IaC)",
+            "type": "namedShape"
+          }
+        ],
+        "title": "oxford-brookes-building-data-poc"
+      }
+    ],
+    "version": 1
+  }
+}

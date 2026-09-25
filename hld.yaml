@@ -1,0 +1,558 @@
+project:
+  name: oxford-brookes-building-data-poc
+  description: >-
+    OBU building-data PoC — combine booking, occupancy, Wi-Fi/network, BMS
+    environmental and external weather data for utilisation analytics, NLP
+    querying (QuickSight Q), and near-real-time alerting/actions. Built so prod
+    is achieved by ADDING components (WAF, Bedrock NL, web app), never by
+    tearing down the PoC core.
+  environment: dev
+  region: eu-west-2
+  availability_zones:
+    - eu-west-2a
+    - eu-west-2b
+    - eu-west-2c
+  profile:
+    lifecycle: poc
+    sensitivity: sensitive
+    compliance:
+      - GDPR
+    exposure: internet
+
+networking:
+  mode: serverless
+
+actors:
+  - id: data-provider
+    name: OBU data provider (Estates / Timetabling / IT / BMS SMEs)
+    kind: people
+    notes: >-
+      Drops the agreed source files into the raw landing bucket. Ingestion is
+      Customer file drop only — the platform never connects to or holds
+      credentials for Customer source systems. Needs write access to raw/ via an
+      IAM principal or cross-account bucket policy.
+    entry_points:
+      - data-raw
+    destinations:
+      - data-curated
+
+  - id: analytics-user
+    name: Estates analytics user
+    kind: people
+    notes: >-
+      Views the QuickSight dashboards and asks natural-language questions of the
+      Q Topic. Governed by QuickSight row-level security — a separate model from
+      the Cognito pool that guards the read API.
+    entry_points:
+      - quicksight
+
+  - id: alert-recipient
+    name: Estates / IT alert recipient
+    kind: people
+    notes: >-
+      Receives threshold-breach and data-quality alert e-mail from the SNS
+      topic. MANUAL POST-APPLY STEP: each address must confirm its SNS
+      subscription from the mailbox before alerting is live — IaC reports the
+      subscription as created either way, so an unconfirmed endpoint silently
+      receives nothing. Confirm one notification end to end during UAT.
+    entry_points:
+      - alert-topic
+
+  - id: dashboard-client
+    name: Customer-built dashboard / prototype client
+    kind: system
+    notes: >-
+      The Customer's own application consuming current room/occupancy state.
+      Authenticates against the Cognito user pool via InitiateAuth (SRP) for a
+      JWT, then calls the read API with it as a Bearer token. Proven in the PoC
+      by a curl request using an InitiateAuth token.
+    entry_points:
+      - read-api
+    destinations:
+      - ddb-state
+
+  - id: source-repo
+    name: Customer source repository (IaC)
+    kind: system
+    notes: >-
+      Holds the parameterised IaC. Reached by the pipeline through the
+      CodeConnections connection; the connection must be authorised by a human in
+      the provider before the pipeline can pull.
+    entry_points:
+      - repo-connection
+
+resources:
+  # ---------- CI/CD PIPELINE (SoW Deliverable 3.1) ----------
+  # STATUS (2026-09-23): NOT YET BUILT. Everything below in this section is
+  # design, not deployed state — the sandbox stack was deployed manually via
+  # sam build/package/deploy. Blocked on the Customer granting access to their
+  # GitHub repo and AWS account; the plan is CodeConnections against that repo,
+  # triggering on changes to its main branch.
+  - category: compute
+    type: codestar
+    id: repo-connection
+    name: CodeConnections connection
+    count: 1
+    notes: >-
+      CodeConnections connection to the Customer's source repository (GitHub via
+      the GitHub App, or GitLab/Bitbucket), consumed by the pipeline's
+      CodeStarSourceConnection source action. MANUAL POST-APPLY STEP: IaC creates
+      the connection in PENDING status — a human must authorise the installation
+      app in the provider before the pipeline can pull source. ASSUMPTION: the
+      Customer supplies the repository at kickoff; if the Customer has an
+      existing pipeline this deliverable adapts to it instead. IaC FLAVOUR IS
+      SETTLED: CloudFormation. The deploy stage is a CloudFormation deploy
+      action assuming iam-iac-exec, so the pipeline's CFN action permissions sit
+      on iam-pipeline while the stack's resource-creation permissions sit on the
+      separate execution role.
+    connections:
+      - pipeline
+
+  - category: compute
+    type: codepipeline
+    id: pipeline
+    name: IaC deployment pipeline
+    count: 1
+    notes: >-
+      Builds and deploys every other deliverable as parameterised IaC. Source
+      stage = CodeStarSourceConnection via repo-connection; build stage =
+      build-project; deploy stage = the IaC deploy action assuming iam-iac-exec.
+      Production promotion later is a parameter change, not a process change.
+      The deploy action's permissions sit on the pipeline service role, while
+      CloudFormation assumes a SEPARATE execution role so provisioned-resource
+      permissions stay split from pipeline permissions.
+    connections:
+      - build-project
+      - pipeline-artifacts
+
+  - category: compute
+    type: codebuild
+    id: build-project
+    name: CodeBuild project
+    count: 1
+    notes: >-
+      Synthesises/packages the IaC and the Lambda deployment artefact before the
+      deploy action. Writes to pipeline-artifacts; logs to its own CloudWatch log
+      group (see logs). SSE-KMS via cmk.
+    connections:
+      - pipeline-artifacts
+
+  - category: storage
+    type: s3
+    id: pipeline-artifacts
+    name: Pipeline artifact bucket
+    count: 1
+    notes: >-
+      CodePipeline artifact store. SSE-KMS (cmk), bucket policy restricting
+      access to the pipeline and build service roles — a bucket policy alone does
+      NOT grant service access, the service roles must allow it too. Lifecycle
+      expiry on old artefacts.
+
+  # ---------- STORAGE (data lake) ----------
+  - category: storage
+    type: s3
+    id: data-raw
+    name: Raw landing bucket
+    count: 1
+    notes: >-
+      Config-driven landing zone. Path per source/output-type
+      (raw/{source}/{type}/yyyy/mm/dd/). INGESTION: the CUSTOMER drops files
+      directly into raw/ (no pollers) — needs write access to this prefix (IAM
+      principal / cross-account bucket policy; AWS Transfer Family SFTP optional
+      if they want a managed drop endpoint). S3 event notifications trigger
+      fn-transform; error/ prefix holds validation failures, each written with a
+      MACHINE-READABLE REASON CODE and counted on the engine's rejected-record
+      custom metric. ACCEPTED INPUT: sample and test data are structured and
+      tabular (CSV, JSON or JSON Lines) with consistent field names and types,
+      per the agreed file format for that source. SSE-KMS (cmk).
+      Lifecycle expiry on raw/ (configs live in DynamoDB, not here, so expiry
+      can be aggressive). NOTE: file-drop = batch cadence — the alerting
+      mechanism is proven but 'near-real-time' is bounded by how often files
+      land; true real-time would need a streaming source (prod/follow-up). If a
+      source ever needs automated pull (e.g. live weather), a single
+      Scheduler-triggered poller can be re-added.
+    connections:
+      - fn-transform
+
+  - category: storage
+    type: s3
+    id: data-curated
+    name: Curated S3 Table bucket (Iceberg)
+    count: 1
+    notes: >-
+      S3 Tables (table bucket) — managed Apache Iceberg V2. Canonical curated
+      tables; managed compaction/maintenance removes the Iceberg ops burden.
+      Schema evolution + MERGE handle new/changing datasets as more sources are
+      added (UC1/UC2 cross-dataset combining). Queried via glue-catalog +
+      athena. Cross-dataset joins built into curated tables here, not at
+      QuickSight view-time. V2 (Athena-compatible); V3/Variant for truly
+      unstructured data would need a non-Athena engine — out of scope. IaC:
+      aws_s3tables_table_bucket / _namespace / _table (+ policies) /
+      AWS::S3Tables::*. Auto-mounts into Glue once the s3tablescatalog
+      integration (see glue-catalog) is on; queryability needs that integration
+      + Lake Formation grants (see lake-formation). PoC tables can be IaC-created
+      (aws_s3tables_table) OR created at runtime by fn-transform for evolving
+      datasets. Prod-additive: Redshift Serverless can later query these same
+      tables for the managed Bedrock text-to-SQL route.
+
+  - category: storage
+    type: s3
+    id: athena-results
+    name: Athena results bucket
+    count: 1
+    notes: >-
+      Athena workgroup query-result location (separate bucket). SSE-KMS,
+      bucket-owner-enforced, short lifecycle expiry.
+
+  # ---------- COMPUTE (Lambda + integration) ----------
+  - category: compute
+    type: lambda
+    id: fn-transform
+    name: Config-driven transform + threshold engine
+    count: 1
+    runtime: python3.14
+    notes: >-
+      SINGLE trigger: the S3 file-drop notification. In that one invocation it
+      reads the per-path mapping config from ddb-config, validates input
+      (failures -> error/ prefix), writes canonical rows into the curated Iceberg
+      tables (PyIceberg / Glue), upserts current-snapshot + alert-state to
+      ddb-state, evaluates readings against alert rules and emits an OK->BREACH
+      status-change event to event-bus — the cold (lake) and hot (alert) paths
+      both run off this one file-drop invocation. DECLARATIVE MAPPING ONLY: every
+      agreed source must be expressible through the ddb-config mapping; the SoW
+      excludes bespoke per-source transform code, so there is NO custom-transform
+      hook in the PoC — a source that cannot be mapped declaratively goes to
+      Change Control. (A second, inline trigger would only return if a STREAMING
+      real-time source is added later — follow-up; with file-drop there is no
+      separate real-time invocation.) THREE failure categories the SoW requires
+      the engine to make visible: (1) DATA issues — records failing validation;
+      (2) UNSUPPORTED data — records/files not matching the agreed format for
+      their source, which the mapping config cannot express; both are written to
+      the error/ prefix with a MACHINE-READABLE REASON CODE attached and counted
+      on the custom metric below; (3) GENERAL failures — exception/timeout/poison
+      event on the async S3-drop invoke -> dlq-transform after Lambda's async
+      retries (SQS DLQ; Lambda Destinations OnFailure is the modern variant).
+      CUSTOM METRIC (SoW requirement): the engine emits a CloudWatch custom
+      metric counting REJECTED RECORDS, dimensioned by SOURCE and REJECTION
+      REASON, via embedded metric format (EMF — a structured log line, no
+      PutMetricData call per record and no extra IAM action). Each dimension set
+      is its own series, so the alarm targets an aggregate (metric math / SEARCH)
+      rather than one dimension pair. Rejected-record count and dlq-transform
+      depth are both alarmed.
+    connections:
+      - data-curated
+      - ddb-config
+      - ddb-state
+      - event-bus
+      - dlq-transform
+
+  - category: compute
+    type: eventbridge
+    id: event-bus
+    name: Alerting event bus
+    count: 1
+    notes: >-
+      Custom bus decoupling detection from action. fn-transform emits a
+      status-change event (OK->BREACH on data that ARRIVES) here; a rule routes
+      it to alert-topic (SNS email). PoC scope = PROVE ALERTS FIRE end to end
+      (detect -> EventBridge -> SNS). FOLLOW-UP (out of PoC): absence detection
+      (AP-down / sensor-stopped staleness sweep — likely covered by the customer's
+      own network monitoring) and the ServiceNow incident API + BMS action webhook
+      (EventBridge Connections + API Destinations + a Step Functions failover
+      wrapper + DLQ) — all bolt onto this same bus later, no rework.
+    connections:
+      - alert-topic
+
+  - category: compute
+    type: sns
+    id: alert-topic
+    name: Alert notification topic
+    count: 1
+    notes: >-
+      SSE-KMS topic with email subscriptions for estates/IT alerts; the SOLE
+      alert sink for the PoC (ServiceNow tickets + BMS actions are follow-up) and
+      the single sink for BOTH the threshold-breach alert rule and all three
+      CloudWatch alarms. MANUAL POST-APPLY STEP: every e-mail endpoint sits in
+      PendingConfirmation until the recipient follows the confirmation link —
+      IaC reports the subscription as created regardless, so confirm each
+      address and test one notification end to end before treating alerting as
+      live.
+      Also the CloudWatch-alarm target. EventBridge publishes via the topic's
+      resource policy (no IAM role needed).
+    connections: []
+
+  - category: compute
+    type: sqs
+    id: dlq-transform
+    name: Transform dead-letter queue
+    count: 1
+    notes: >-
+      SQS DLQ for fn-transform async-invoke failures (function errors / timeouts
+      / poison events that survive Lambda's async retries) — distinct from the
+      in-code error/ prefix which handles known-bad DATA. SSE-KMS (cmk). Alarmed
+      on depth > 0; messages are inspected/redriven manually in the PoC.
+
+  # ---------- DATABASE / ANALYTICS ----------
+  - category: database
+    type: dynamodb
+    id: ddb-config
+    name: Config & rules table
+    count: 1
+    notes: >-
+      Transform mapping configs (per source/output-type) + alert
+      rules/thresholds. On-demand, KMS, PITR. Add a source = add a config row;
+      add a rule = add a rule row. SoW CAPS: onboarding covers up to FIVE agreed
+      sources (expected: bookings/timetabling, occupancy (Smart-Vis export),
+      Wi-Fi/network counts, BMS environmental, external weather), each of which
+      must be mappable DECLARATIVELY — no bespoke transform code in the PoC. The
+      PoC configures exactly ONE alert rule, agreed in writing with the Customer
+      before project start (source + entity, metric, comparison, threshold,
+      severity) and demonstrated end to end. Further rules are configuration the
+      Customer adds after handover.
+    connections: []
+
+  - category: database
+    type: dynamodb
+    id: ddb-state
+    name: State & hot-store table
+    count: 1
+    notes: >-
+      Alert state (OK/BREACH per entity+metric, conditional-write dedup,
+      alert-sent marker (email dedup), breach_started_at) and the
+      current-snapshot hot store for near-real-time reads. On-demand, TTL on the
+      state items, GSI for dashboard/API access patterns (e.g. space_type =
+      computer_room), KMS, PITR. Read directly by read-api (API GW native
+      integration). (last_seen / absence detection is a follow-up
+      with the AP-down use case.)
+      BUILT (2026-09-23): EntityTypeIndex — hash key entity_type (the mapping
+      config's entity.type, e.g. "room"), range key pk, full projection. Lists
+      every entity of one type; does not yet filter by a finer category like
+      space_type, since no mapping config maps such a field. The read API
+      itself still only does single-item GetItem by room ID and does not use
+      this index — it is for the not-yet-built dashboard access pattern.
+    connections: []
+
+  - category: database
+    type: glue_data_catalog
+    id: glue-catalog
+    name: Glue Data Catalog (dataset registry)
+    count: 1
+    notes: >-
+      Glue catalogs the curated Iceberg tables via the s3tablescatalog FEDERATED
+      CATALOG — an account+region singleton that auto-mounts EVERY S3 table
+      bucket, existing and future (bucket -> child catalog, namespace ->
+      database, table -> table; queried as
+      s3tablescatalog/<bucket>/<namespace>/<table>). Iceberg manages its own
+      hidden partitioning and Athena prunes from Iceberg metadata — so NO
+      partition projection, NO crawler, and tables AUTO-MOUNT (no authored Glue
+      table defs; both projection and crawlers are Hive-only). IaC:
+      aws_glue_catalog (federated_catalog block) / AWS::Glue::Catalog. ORDERING:
+      bucket-INDEPENDENT — enable in foundation BEFORE any table bucket exists;
+      later buckets appear automatically. Enable ONCE per account/region
+      (one-time out-of-band console/CLI bootstrap, OR a single foundation-stack
+      resource) — never per-project-stack (it's account-global). Also the
+      DATASET REGISTRY a future Bedrock NL layer reads; a crawler is only a prod
+      extension for ad-hoc non-Iceberg drops.
+    connections: []
+
+  - category: database
+    type: athena
+    id: athena
+    name: Athena
+    count: 1
+    notes: >-
+      Workgroup with result location = athena-results. Queries the curated
+      Iceberg tables via glue-catalog. CROSS-DATASET JOINS ARE BUILT AS ATHENA
+      VIEWS over the curated tables so QuickSight datasets land FLAT — this is
+      what delivers the multi-dataset comparison reports and underpins Q
+      accuracy; joins never happen at QuickSight view-time. The analytical/historical query engine;
+      source for QuickSight datasets. Not used for alerting.
+    connections:
+      - data-curated
+      - glue-catalog
+
+  - category: database
+    type: quicksight
+    id: quicksight
+    name: QuickSight (Amazon Quick) + Q
+    count: 1
+    notes: >-
+      THE PoC NL surface — users chat inside QuickSight, no web app. Sub-objects
+      to configure: (1) Athena data source; (2) SPICE dataset(s) on native
+      hourly refresh, cross-dataset joins done in an Athena view so the dataset
+      is a flat wide table; (3) Q Topic — the NL semantic model (friendly names,
+      synonyms, semantic types, date config, field descriptions, sample
+      questions) — THIS modelling is the build effort and where >90% accuracy
+      lives; (4) row-level-security dataset = the PoC RBAC (Cognito is a prod
+      web-app addition); (5) Pro author role for gen-BI; (6) Topic refresh
+      schedule aligned to the SPICE refresh. SoW CAPS: up to TWO dashboards
+      (visuals may include daily trend, weekly heatmap, capacity gauge, zone
+      breakdown) and exactly ONE Q Topic (e.g. 'Building Occupancy').
+      LICENSING (Customer-borne AWS usage; the Supplier does the sign-up and
+      enablement): Enterprise Edition is required; at least one AUTHOR PRO
+      licence, because creating a Q Topic is an Author Pro capability; dashboard
+      consumers are Reader, or Reader Pro where generative summaries/data
+      stories are wanted; a per-account Amazon Q infrastructure fee applies to
+      any account with a Pro user and Q&A enabled via Topics. Q never sees Iceberg — Athena
+      abstracts the format; QuickSight just reads Athena via a Lake Formation
+      grant (see lake-formation). NOT DYNAMIC OVER THE CATALOG: Q answers only
+      over DEFINED datasets/Topics — a new table landing in Glue does NOT
+      auto-appear; each new dataset must be modelled into a Topic by hand.
+      SPICE is NOT required (direct query, incl. a native S3 Tables source, is
+      an option) — we use SPICE for speed + Athena-cost control; volume is far
+      within limits (Enterprise 2B rows / 2 TB per dataset, capacity is a
+      purchased GB pool, one data source backs many datasets). The dynamic
+      "read the whole catalog, ask anything incl. brand-new datasets" capability
+      is the Bedrock follow-up, NOT Q. ASSUMPTION: sample NL question set + >90%
+      accuracy eval TBC. PROD-ADDITIVE NL extension (follow-up, not PoC):
+      Bedrock text-to-SQL — managed (Bedrock KB + Redshift Serverless over the
+      same S3 Tables) or custom (Bedrock Agent + Lambda + Athena). Both bolt on
+      without reworking the lake.
+    connections:
+      - athena
+
+  # ---------- EDGE / API ----------
+  - category: load_balancing
+    type: api_gateway
+    id: read-api
+    name: Read REST API (DynamoDB direct)
+    count: 1
+    notes: >-
+      REST API with a native API Gateway -> DynamoDB integration (NO Lambda) —
+      serves the current room/occupancy snapshot from ddb-state. AUTH: Cognito
+      User Pool authorizer (COGNITO_USER_POOLS) — NATIVE, no custom Lambda.
+      Chosen over IAM/SigV4 (a customer-built PoC dashboard can't safely hold AWS
+      creds) and over a Lambda PSK authorizer (custom Lambda + weak static
+      secret). The authorizer is method-level and INDEPENDENT of the DynamoDB
+      integration, so they coexist. The web app authenticates directly against
+      Cognito (InitiateAuth, SRP flow) for a JWT and sends it as a Bearer token —
+      NO hosted UI needed; curl test uses a token from InitiateAuth /
+      AdminInitiateAuth. Optional resource-policy IP allow-list for defence in
+      depth. PROD-ADDITIVE (follow-up, not teardown): WAF on the endpoint,
+      Entra/Azure AD federation for uni SSO, and the full student web app.
+    connections:
+      - ddb-state
+
+  # ---------- SECURITY ----------
+  - category: security
+    type: kms_key
+    id: cmk
+    name: Customer-managed key
+    count: 1
+    notes: >-
+      Single CMK (one trust boundary for the PoC) encrypting S3, DynamoDB, SNS,
+      the dlq-transform queue and log groups. Automatic rotation + key policy.
+    connections: []
+
+  - category: security
+    type: cognito
+    id: user-pool
+    name: Cognito user pool
+    count: 1
+    notes: >-
+      User pool + app client (NO hosted UI / domain — unused by this flow, so
+      no ACM cert / custom-domain ordering applies). The SUPPLIER creates the
+      initial read API users (AdminCreateUser) from the names and e-mail
+      addresses the Customer supplies before project start; the CUSTOMER creates
+      and manages any further users via the console after handover. The web app
+      authenticates directly against Cognito (InitiateAuth, USER_SRP_AUTH — the
+      Amplify / cognito-identity-js SDK does SRP, password never sent in
+      plaintext) for a JWT, then calls read-api (native COGNITO_USER_POOLS
+      authorizer, no Lambda). Groups defined for future per-role API RBAC. Hosted
+      UI + domain return with the Entra/Azure AD federation follow-up (federated
+      sign-in uses a redirect flow, not InitiateAuth). Distinct from QuickSight's
+      own native RBAC/RLS which governs the analytics surface.
+    connections:
+      - read-api
+
+  - category: security
+    type: lake_formation
+    id: lake-formation
+    name: Lake Formation governance
+    count: 1
+    notes: >-
+      Governs the S3 Tables (Iceberg) curated store — S3 Tables are
+      Lake-Formation-managed, not plain IAM/S3. Setup: register the s3tables
+      catalog into Glue Data Catalog, then grant fine-grained permissions:
+      WRITE to fn-transform (the Iceberg writer), SELECT to the Athena workgroup
+      / QuickSight service role (readers). Without these grants Athena and
+      QuickSight simply can't see the curated data. ORDERING: account-level
+      data-lake settings + catalog/database-level grants set in foundation
+      CASCADE to tables created later, so grants don't need each table to
+      pre-exist; per-principal grants land where consumed (D4 write, D5 read).
+      IaC: aws_lakeformation_resource / _permissions / _data_lake_settings /
+      AWS::LakeFormation::*. Prod-additive: column/row filters here later if
+      finer access control is needed.
+
+  # ---------- IAM ----------
+  - category: iam
+    type: iam_role
+    id: iam-lambda
+    name: Lambda execution role
+    count: 1
+    notes: Least-privilege execution role for fn-transform (the only Lambda).
+
+  - category: iam
+    type: iam_role
+    id: iam-apigw-ddb
+    name: API Gateway integration role
+    count: 1
+    notes: Lets the REST API read ddb-state directly (native integration, no Lambda). EventBridge -> SNS uses the topic resource policy, no role needed.
+
+  - category: iam
+    type: iam_role
+    id: iam-pipeline
+    name: CodePipeline service role
+    count: 1
+    notes: Pipeline service role — get/put on pipeline-artifacts, UseConnection on repo-connection, the IaC deploy action permissions, and iam:PassRole scoped to iam-iac-exec only. NOT YET BUILT — see the CI/CD pipeline section's status note.
+
+  - category: iam
+    type: iam_role
+    id: iam-codebuild
+    name: CodeBuild service role
+    count: 1
+    notes: Build service role — get/put on pipeline-artifacts, write to its log group, and kms decrypt/generate on cmk. NOT YET BUILT — see the CI/CD pipeline section's status note.
+
+  - category: iam
+    type: iam_role
+    id: iam-iac-exec
+    name: IaC execution role
+    count: 1
+    notes: Assumed by the IaC deploy action to create every other resource in this HLD. Deliberately separate from iam-pipeline so provisioned-resource permissions are split from pipeline permissions. NOT YET BUILT — see the CI/CD pipeline section's status note.
+
+  # ---------- MONITORING ----------
+  - category: monitoring
+    type: cloudwatch_log_group
+    id: logs
+    name: Log groups
+    count: 3
+    notes: fn-transform log group + API Gateway log group + CodeBuild build log group, KMS-encrypted. Each lives in its owner's deliverable, not a separate observability bucket.
+
+  - category: monitoring
+    type: cloudwatch
+    id: alarms
+    name: CloudWatch alarms
+    count: 3
+    notes: >-
+      THREE alarms, all -> alert-topic, covering the SoW's three failure
+      categories: (1) dlq-transform depth > 0 (general/platform failure);
+      (2) fn-transform error rate (general/platform failure); (3) REJECTED-RECORD
+      COUNT on the engine's custom metric, breaching where one or more records
+      are rejected in the agreed evaluation period — this is the lower-severity
+      DATA-QUALITY alarm covering both data issues and unsupported data, and is
+      actionable by the Customer's data owners, not a platform on-call.
+      ASSUMPTION: the evaluation period for the data-quality alarm is supplied by
+      the Customer. Error/ prefix review and remediation is a Customer activity —
+      the Supplier provides the alarm and the reason code, not data correction.
+      Service Quotas note: default account quotas are expected to be sufficient
+      for PoC scale; no increases anticipated.
+    connections:
+      - alert-topic
+
+diagram:
+  direction: LR
+  show_az_boundaries: false
+  hidden_categories:
+    - security
+    - iam
+    - monitoring

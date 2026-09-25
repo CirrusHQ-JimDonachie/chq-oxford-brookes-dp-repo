@@ -1,0 +1,83 @@
+# Development-only configuration for the Lambda handlers in this directory.
+# Nothing here is deployed: the deployment package is each handler's app/ subdir
+# plus the pinned libraries in its requirements.txt.
+
+[project]
+name = "obu-building-data-lambdas"
+version = "0.1.0"
+description = "Lambda handlers for the Oxford Brookes building data platform"
+requires-python = "==3.14.*"
+
+[dependency-groups]
+dev = [
+    "aws-lambda-powertools>=3.35.0",
+    "boto3>=1.43.95",
+    "boto3-stubs[dynamodb,events,s3]>=1.43.95",
+    "moto[dynamodb,events,s3]>=5.2.3",
+    "mypy>=2.3.1",
+    "pip-audit>=2.10.1",
+    "pyarrow>=25.0.1",
+    "pyiceberg[pyarrow,rest-sigv4]>=0.12.0",
+    "pytest>=9.1.1",
+    "pytest-randomly>=5.0.0",
+    "pytest-socket>=0.8.1",
+    "ruff>=0.16.7",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    # The deployment package is a flat directory of top-level modules, so there
+    # are no packages to carry __init__.py files.
+    "INP001",
+    # These deliverables carry no copyright header.
+    "CPY001",
+    # Rules the formatter owns; enabling them fights `ruff format`.
+    "COM812",
+    "COM819",
+    "D206",
+    "D300",
+    "E111",
+    "E114",
+    "E117",
+    "ISC001",
+    "ISC002",
+    "Q000",
+    "Q001",
+    "Q002",
+    "Q003",
+    "W191",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"*/tests/*" = [
+    "S101",    # asserts are how tests assert
+    "PLR2004", # literal expected values are clearer than named constants here
+    "PLR0913", # a test takes as many fixtures as the case needs
+    "PLR0917", # same, counted positionally
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["pyiceberg.*"]
+follow_untyped_imports = true
+
+# pyarrow ships no py.typed marker, so its public API cannot be type-checked.
+[[tool.mypy.overrides]]
+module = ["pyarrow.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

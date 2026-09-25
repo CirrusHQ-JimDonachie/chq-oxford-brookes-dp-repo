@@ -1,0 +1,380 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Account-level groundwork for the building data platform: the shared encryption
+  key, the Lake Formation data lake settings, and the Glue federated catalog that
+  mounts S3 table buckets. Deploys before every other stack.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming
+        Parameters:
+          - ProjectSlug
+          - Environment
+      - Label:
+          default: Account prerequisites
+        Parameters:
+          - DeployRoleArn
+          - QuickSightServiceRoleArn
+    ParameterLabels:
+      ProjectSlug:
+        default: Project slug
+      Environment:
+        default: Environment
+      DeployRoleArn:
+        default: CloudFormation deploy role ARN
+      QuickSightServiceRoleArn:
+        default: QuickSight service role ARN
+
+Parameters:
+  ProjectSlug:
+    Type: String
+    Description: Short lowercase name used to build every resource name.
+    AllowedPattern: '^[a-z0-9-]{3,20}$'
+    ConstraintDescription: 3 to 20 characters, lowercase letters, digits and hyphens.
+  Environment:
+    Type: String
+    Description: Environment this stack deploys; part of every resource name.
+    AllowedValues:
+      - dev
+      - test
+      - prod
+  DeployRoleArn:
+    Type: String
+    Description: >-
+      ARN of the IAM role CloudFormation assumes to deploy this stack. It is named
+      as a Lake Formation data lake administrator so the grants in the engine and
+      analytics stacks can be written.
+    AllowedPattern: '^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$'
+    ConstraintDescription: An IAM role ARN.
+  QuickSightServiceRoleArn:
+    Type: String
+    Description: >-
+      ARN of the IAM role QuickSight runs queries as. It is given use of the data
+      key so it can read Athena query results.
+    AllowedPattern: '^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$'
+    ConstraintDescription: An IAM role ARN.
+
+Resources:
+
+  # Every store in the platform encrypts under this one key: the landing and
+  # query-result buckets, the curated table bucket, both DynamoDB tables, the
+  # alert topic, the dead-letter queue, the transform function's environment
+  # variables and both log groups.
+  # To retire the key, take these two policies off in their own deployment,
+  # deploy that, then delete the stack, and put them back if the stack is
+  # rebuilt. Data written under the key is unreadable once the key is gone.
+  DataKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub >-
+        Encrypts data at rest for ${ProjectSlug} in ${Environment}: object storage, tables, queues, topics, function environment variables and log groups.
+      Enabled: true
+      EnableKeyRotation: true
+      # DynamoDB and CloudWatch Logs accept symmetric keys only.
+      KeySpec: SYMMETRIC_DEFAULT
+      KeyUsage: ENCRYPT_DECRYPT
+      MultiRegion: false
+      PendingWindowInDays: 30
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: !Sub '${ProjectSlug}-${Environment}-data-key'
+        Statement:
+          - Sid: EnableIamUserPermissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+
+          # CloudWatch Logs does the encrypting for the services that write
+          # through it, so the function and the API need no grant of their own.
+          # The encryption context pins the key to these two log groups: any
+          # other group that is pointed at this key cannot use it.
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+              - 'kms:Describe*'
+            Resource: '*'
+            Condition:
+              ArnEquals:
+                'kms:EncryptionContext:aws:logs:arn':
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectSlug}-${Environment}-transform'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/apigateway/${ProjectSlug}-${Environment}-read-api'
+
+          # DynamoDB reaches the key on behalf of whoever is reading or writing
+          # the table, so the grant is conditioned on the call arriving through
+          # DynamoDB. The region is wildcarded because DynamoDB requires the
+          # permission to hold independently of region.
+          - Sid: AllowDynamoDbTableEncryption
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action:
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+              - 'kms:DescribeKey'
+              - 'kms:CreateGrant'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'kms:CallerAccount': !Ref 'AWS::AccountId'
+              StringLike:
+                'kms:ViaService': !Sub 'dynamodb.*.${AWS::URLSuffix}'
+
+          # Without this the alarms still change state and the notification is
+          # rejected at the key, with nothing in the alarm history to show it.
+          - Sid: AllowCloudWatchAlarmsToPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action:
+              - 'kms:GenerateDataKey*'
+              - 'kms:Decrypt'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+              ArnLike:
+                'aws:SourceArn': !Sub 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectSlug}-${Environment}-*'
+
+          - Sid: AllowEventBridgeToValidateKeyPermission
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: 'kms:DescribeKey'
+            Resource: '*'
+
+          # Covers both the events held on the encrypted bus and the deliveries
+          # the routing rule makes to the encrypted topic. A source condition
+          # would fail closed on the second of those: Amazon SNS documents that
+          # aws:SourceAccount, aws:SourceArn and aws:SourceOrgID are not
+          # supported for EventBridge delivery to an encrypted topic.
+          - Sid: AllowEventBridgeToEncryptEvents
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action:
+              - 'kms:GenerateDataKey*'
+              - 'kms:Decrypt'
+            Resource: '*'
+
+          # S3 Tables checks this grant when a table is created under the key,
+          # and uses it afterwards for compaction, snapshot expiry and
+          # unreferenced file removal. Without it CreateTable fails.
+          - Sid: AllowS3TablesMaintenance
+            Effect: Allow
+            Principal:
+              Service: maintenance.s3tables.amazonaws.com
+            Action:
+              - 'kms:GenerateDataKey'
+              - 'kms:Decrypt'
+            Resource: '*'
+            Condition:
+              StringLike:
+                'kms:EncryptionContext:aws:s3:arn': !Sub 'arn:${AWS::Partition}:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${ProjectSlug}-${Environment}-curated/*'
+
+          # Lake Formation vends credentials for the curated tables under this
+          # role, so the role needs the key to hand back readable data.
+          - Sid: AllowLakeFormationCredentialVending
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt LakeFormationVendingRole.Arn
+            Action:
+              - 'kms:GenerateDataKey'
+              - 'kms:Decrypt'
+              - 'kms:DescribeKey'
+            Resource: '*'
+
+          # QuickSight reads Athena query results out of the results bucket.
+          - Sid: AllowQuickSightToReadQueryResults
+            Effect: Allow
+            Principal:
+              AWS: !Ref QuickSightServiceRoleArn
+            Action:
+              - 'kms:GenerateDataKey'
+              - 'kms:Decrypt'
+            Resource: '*'
+
+  DataKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${ProjectSlug}-${Environment}-data'
+      TargetKeyId: !Ref DataKey
+
+  # The account holds one set of data lake settings. Deploying this replaces
+  # the administrator list with the role named below, so read the current value
+  # with "aws lakeformation get-data-lake-settings" before the first deployment
+  # and check that nothing else in the account depends on an administrator that
+  # is about to be dropped. Deleting the stack leaves the settings empty.
+  DataLakeSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      Admins:
+        - DataLakePrincipalIdentifier: !Ref DeployRoleArn
+      # PoC-only shortcut, not a production pattern: only a Lake Formation
+      # admin-equivalent principal can currently resolve the s3tablescatalog
+      # federated catalog via Athena at all — confirmed directly, an ordinary
+      # principal with full IAM (glue:* on *) and LF SELECT/DESCRIBE/catalog
+      # grants still hit CATALOG_NOT_FOUND. The flat-table refresh job
+      # (analytics.yaml, FlatRefreshRole) needs to read the curated source
+      # table, so it needs to be an admin too. Confirmed directly: Lake
+      # Formation validates the principal at PutDataLakeSettings time and
+      # rejects a role that doesn't exist yet ("Invalid principal") — on a
+      # from-scratch deployment this entry has to be added on a SECOND
+      # deploy, once the first has created FlatRefreshRole (analytics.yaml).
+        - DataLakePrincipalIdentifier: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectSlug}-${Environment}-flat-refresh'
+      MutationType: REPLACE
+      Parameters:
+        CROSS_ACCOUNT_VERSION: '4'
+      # Existing Glue databases and tables keep working off IAM alone. The
+      # curated tables are governed instead, through the Glue catalog below.
+      CreateDatabaseDefaultPermissions:
+        - Principal:
+            DataLakePrincipalIdentifier: IAM_ALLOWED_PRINCIPALS
+          Permissions:
+            - ALL
+      CreateTableDefaultPermissions:
+        - Principal:
+            DataLakePrincipalIdentifier: IAM_ALLOWED_PRINCIPALS
+          Permissions:
+            - ALL
+      # The transform function reads and writes the curated tables through an
+      # external Iceberg client, which takes credentials without session tags.
+      # AllowFullTableExternalDataAccess alone is not sufficient for the Glue
+      # Iceberg REST endpoint's table_exists() check against a federated S3
+      # Tables catalog — confirmed directly, by testing: the first curated
+      # write kept failing on glue:GetTable until this was also turned on,
+      # matching the fallback DEPLOYMENT.md already flagged for this exact
+      # symptom ("an access error from the Glue Iceberg endpoint").
+      AllowFullTableExternalDataAccess: true
+      AllowExternalDataFiltering: true
+      ExternalDataFilteringAllowList:
+        - DataLakePrincipalIdentifier: !Ref AWS::AccountId
+
+  # Lake Formation assumes this role to hand short-lived credentials to the
+  # engines that read and write the curated tables.
+  # Use of the data key is granted on the key itself. Granting it here as well
+  # would make the key and the role each depend on the other.
+  LakeFormationVendingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: !Sub 'Lake Formation assumes this role to vend credentials for the ${ProjectSlug} table buckets.'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: LakeFormationDataAccessPolicy
+            Effect: Allow
+            Principal:
+              Service: lakeformation.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+              - 'sts:SetContext'
+              - 'sts:SetSourceIdentity'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: s3tables-data-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # ListTableBuckets is an account-wide call and takes no resource ARN.
+              - Sid: LakeFormationPermissionsForS3ListTableBucket
+                Effect: Allow
+                Action:
+                  - 's3tables:ListTableBuckets'
+                Resource:
+                  - '*'
+              - Sid: LakeFormationDataAccessPermissionsForS3TableBucket
+                Effect: Allow
+                Action:
+                  - 's3tables:CreateTableBucket'
+                  - 's3tables:GetTableBucket'
+                  - 's3tables:CreateNamespace'
+                  - 's3tables:GetNamespace'
+                  - 's3tables:ListNamespaces'
+                  - 's3tables:DeleteNamespace'
+                  - 's3tables:DeleteTableBucket'
+                  - 's3tables:CreateTable'
+                  - 's3tables:DeleteTable'
+                  - 's3tables:GetTable'
+                  - 's3tables:ListTables'
+                  - 's3tables:RenameTable'
+                  - 's3tables:UpdateTableMetadataLocation'
+                  - 's3tables:GetTableMetadataLocation'
+                  - 's3tables:GetTableData'
+                  - 's3tables:PutTableData'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/*'
+
+  # The account and region hold one s3tablescatalog, and AWS fixes its name.
+  # It mounts every table bucket in the region, including buckets this project
+  # did not create, so deleting it takes the Glue and Athena view of all of
+  # them away. The retain policies below leave it in place when the stack goes.
+  # To retire it, take these two policies off in their own deployment, deploy
+  # that, then delete the stack.
+  #
+  # Created before TableBucketsRegistration, not after: registering the table
+  # buckets with WithFederation: true auto-provisions this same catalog as a
+  # side effect, and if that registration runs first, the explicit create here
+  # then fails with AlreadyExistsException — confirmed directly, by timestamp,
+  # across repeated deployments (TableBucketsRegistration completing and this
+  # resource failing under a second later). Creating it explicitly first, with
+  # the properties this stack actually needs, and having the registration
+  # depend on it, avoids the race instead of racing the other way.
+  S3TablesCatalog:
+    Type: AWS::Glue::Catalog
+    DependsOn: DataLakeSettings
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: s3tablescatalog
+      Description: Federated catalog mounting the S3 table buckets in this account and region.
+      FederatedCatalog:
+        Identifier: !Sub 'arn:${AWS::Partition}:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/*'
+        ConnectionName: 'aws:s3tables'
+      # Empty defaults keep the mounted tables under Lake Formation permissions
+      # rather than IAM alone; the grants are made in the stacks that need them.
+      CreateDatabaseDefaultPermissions: []
+      CreateTableDefaultPermissions: []
+      AllowFullTableExternalDataAccess: 'True'
+
+  # Hands every table bucket in this account and region to Lake Formation, so
+  # buckets created later are covered without a further deployment.
+  # The AWS CLI walkthrough also passes --with-privileged-access on
+  # register-resource. AWS::LakeFormation::Resource has no property for it, so
+  # it is not set here. See the report note that goes with this stack.
+  TableBucketsRegistration:
+    Type: AWS::LakeFormation::Resource
+    DependsOn: S3TablesCatalog
+    Properties:
+      ResourceArn: !Sub 'arn:${AWS::Partition}:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/*'
+      RoleArn: !GetAtt LakeFormationVendingRole.Arn
+      UseServiceLinkedRole: false
+      WithFederation: true
+      # Access to the curated tables runs through Lake Formation permissions
+      # alone, not through bucket policies as well.
+      HybridAccessEnabled: false
+
+Outputs:
+  KmsKeyArn:
+    Description: ARN of the key every store in the platform encrypts under.
+    Value: !GetAtt DataKey.Arn
+  KmsKeyId:
+    Description: Key ID of the platform data key.
+    Value: !Ref DataKey
+  LakeFormationVendingRoleArn:
+    Description: ARN of the role Lake Formation assumes to vend table credentials.
+    Value: !GetAtt LakeFormationVendingRole.Arn

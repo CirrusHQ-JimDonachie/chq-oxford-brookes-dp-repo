@@ -1,0 +1,197 @@
+[
+  {
+    "action": "s3:GetObject",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "data-raw"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "s3:GetObjectVersion",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "data-raw"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "s3:PutObject",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "data-raw"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "kms:Decrypt",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "cmk"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "kms:GenerateDataKey",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "cmk"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "dynamodb:GetItem",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "ddb-config"
+      },
+      {
+        "type": "project_resource_id",
+        "value": "ddb-state"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "dynamodb:Query",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "ddb-config"
+      },
+      {
+        "type": "project_resource_id",
+        "value": "ddb-state"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "dynamodb:PutItem",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "ddb-state"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "dynamodb:UpdateItem",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "ddb-state"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "dynamodb:DeleteItem",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "ddb-state"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "events:PutEvents",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "event-bus"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "glue:GetCatalog",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "glue-catalog"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "glue:GetDatabase",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "glue-catalog"
+      },
+      {
+        "type": "project_resource_id",
+        "value": "data-curated"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "glue:GetTable",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "glue-catalog"
+      },
+      {
+        "type": "project_resource_id",
+        "value": "data-curated"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "glue:CreateTable",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "glue-catalog"
+      },
+      {
+        "type": "project_resource_id",
+        "value": "data-curated"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "glue:UpdateTable",
+    "resource_refs": [
+      {
+        "type": "project_resource_id",
+        "value": "glue-catalog"
+      },
+      {
+        "type": "project_resource_id",
+        "value": "data-curated"
+      }
+    ],
+    "condition": null
+  },
+  {
+    "action": "lakeformation:GetDataAccess",
+    "resource_refs": [
+      {
+        "type": "scope_wildcard",
+        "value": "*",
+        "justification": "Lake Formation vends the temporary credentials the Glue Iceberg REST endpoint uses to reach the table data. The action carries no resource-level scoping and AWS documents it with Resource \"*\"; the effective scope is the Lake Formation grants held on the catalog, database and table."
+      }
+    ],
+    "condition": null
+  }
+]

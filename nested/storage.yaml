@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Curated data store: the Iceberg table bucket that holds the combined datasets,
+  and the bucket Athena writes query results to. Child stack of main.yaml.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming
+        Parameters:
+          - ProjectSlug
+          - Environment
+      - Label:
+          default: Curated store
+        Parameters:
+          - CuratedNamespace
+      - Label:
+          default: Encryption
+        Parameters:
+          - KmsKeyArn
+      - Label:
+          default: Analytics
+        Parameters:
+          - QuickSightServiceRoleArn
+    ParameterLabels:
+      ProjectSlug:
+        default: Project slug
+      Environment:
+        default: Environment
+      CuratedNamespace:
+        default: Curated table namespace
+      KmsKeyArn:
+        default: Data key ARN
+      QuickSightServiceRoleArn:
+        default: QuickSight service role ARN
+
+Parameters:
+  ProjectSlug:
+    Type: String
+    Description: Short lowercase name used to build every resource name.
+    AllowedPattern: '^[a-z0-9-]{3,20}$'
+    ConstraintDescription: 3 to 20 characters, lowercase letters, digits and hyphens.
+  Environment:
+    Type: String
+    Description: Environment this stack deploys; part of every resource name.
+    AllowedValues:
+      - dev
+      - test
+      - prod
+  CuratedNamespace:
+    Type: String
+    Description: Namespace (database) inside the curated table bucket that the mapping configs target.
+    Default: building_data
+    AllowedPattern: '^[a-z0-9_]{1,255}$'
+    ConstraintDescription: Lowercase letters, digits and underscores.
+  KmsKeyArn:
+    Type: String
+    Description: ARN of the key that encrypts the curated tables and the Athena query results.
+    AllowedPattern: '^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]{36}$'
+    ConstraintDescription: A KMS key ARN.
+  QuickSightServiceRoleArn:
+    Type: String
+    Description: >-
+      ARN of the IAM role QuickSight runs Athena queries as. Granted S3 access
+      to the Athena results bucket here, on the bucket's own policy: the AWS
+      managed AWSQuicksightAthenaAccess policy on this role only covers the
+      default aws-athena-query-results-* bucket naming convention, not a
+      custom-named bucket like this one, and the QuickSight console's own
+      "S3 bucket access" setting was confirmed, by direct testing, not to be
+      sufficient on its own.
+    AllowedPattern: '^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$'
+
+Resources:
+  # Retained on stack delete and on replacement: the curated lake is the permanent
+  # record and nothing upstream can rebuild it. To retire it, remove both policies
+  # in their own deployment, delete the stack, then put them back if the stack is
+  # rebuilt.
+  CuratedTableBucket:
+    Type: AWS::S3Tables::TableBucket
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableBucketName: !Sub '${ProjectSlug}-${Environment}-curated'
+      # S3 Tables accepts only a customer managed key here. The maintenance
+      # principal needs kms:GenerateDataKey and kms:Decrypt on it, or creating a
+      # table fails.
+      EncryptionConfiguration:
+        SSEAlgorithm: aws:kms
+        KMSKeyArn: !Ref KmsKeyArn
+      # An object no snapshot references is marked noncurrent after
+      # UnreferencedDays and deleted NoncurrentDays later; recovering one after
+      # that needs an AWS Support case.
+      UnreferencedFileRemoval:
+        Status: Enabled
+        UnreferencedDays: 3
+        NoncurrentDays: 10
+
+  # Tables inside the namespace are created by the transform function as new
+  # datasets arrive, so none are declared here.
+  CuratedTableNamespace:
+    Type: AWS::S3Tables::Namespace
+    # Retained with its bucket: the tables created here at runtime outlive the stack.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Namespace: !Ref CuratedNamespace
+      TableBucketARN: !GetAtt CuratedTableBucket.TableBucketARN
+
+  AthenaResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Bucket names are global, so the account id is what keeps this one unique.
+      BucketName: !Sub '${ProjectSlug}-${Environment}-athena-results-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KmsKeyArn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      # Query results are transient output that the lifecycle rule expires, so no
+      # versions are kept.
+      VersioningConfiguration:
+        Status: Suspended
+      LifecycleConfiguration:
+        Rules:
+          # Scoped to the workgroup's ad-hoc result location (see
+          # AnalyticsWorkGroup in analytics.yaml) — NOT bucket-wide, so the
+          # QuickSight flat tables living under curated-flat/ are not swept up
+          # on the same 7-day clock. Those are dropped and rebuilt by the
+          # refresh state machine instead, not by time.
+          - Id: expire-query-results
+            Status: Enabled
+            Prefix: query-results/
+            ExpirationInDays: 7
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  AthenaResultsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AthenaResultsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt AthenaResultsBucket.Arn
+              - !Sub '${AthenaResultsBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+          # A PUT that does not carry the aws:kms header is refused, so the Athena
+          # workgroup has to write results with SSE-KMS result encryption set.
+          - Sid: DenyUnencryptedObjectUploads
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub '${AthenaResultsBucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                's3:x-amz-server-side-encryption': 'aws:kms'
+          # The AWS managed AWSQuicksightAthenaAccess policy on the QuickSight
+          # service role scopes every S3 action to arn:...:s3:::aws-athena-query-
+          # results-*, the default bucket naming convention. This bucket's name
+          # doesn't match it, so without this statement QuickSight's Athena
+          # connection test fails with "Unable to verify/create output bucket" —
+          # confirmed by testing, not assumed; the console's own "S3 bucket
+          # access" toggle for this bucket did not resolve it.
+          - Sid: AllowQuickSightServiceRoleAthenaResults
+            Effect: Allow
+            Principal:
+              AWS: !Ref QuickSightServiceRoleArn
+            Action:
+              - 's3:GetBucketLocation'
+              - 's3:ListBucket'
+              - 's3:ListBucketMultipartUploads'
+              - 's3:GetObject'
+              - 's3:PutObject'
+              - 's3:ListMultipartUploadParts'
+              - 's3:AbortMultipartUpload'
+            Resource:
+              - !GetAtt AthenaResultsBucket.Arn
+              - !Sub '${AthenaResultsBucket.Arn}/*'
+
+Outputs:
+  CuratedTableBucketArn:
+    Description: ARN of the curated Iceberg table bucket.
+    Value: !GetAtt CuratedTableBucket.TableBucketARN
+  CuratedTableBucketName:
+    Description: Name of the curated Iceberg table bucket.
+    Value: !Sub '${ProjectSlug}-${Environment}-curated'
+  CuratedNamespaceName:
+    Description: Namespace inside the curated table bucket that holds the tables.
+    Value: !Ref CuratedNamespace
+  AthenaResultsBucketName:
+    Description: Name of the bucket Athena writes query results to.
+    Value: !Ref AthenaResultsBucket
+  AthenaResultsBucketArn:
+    Description: ARN of the bucket Athena writes query results to.
+    Value: !GetAtt AthenaResultsBucket.Arn

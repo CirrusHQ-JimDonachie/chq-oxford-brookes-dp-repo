@@ -1,0 +1,46 @@
+project: oxford-brookes-building-data-poc
+version: 1
+last_updated: '2026-09-16'
+handlers:
+  fn-transform:
+    runtime: python3.14
+    iceberg_write_mechanism: pyiceberg_direct_append
+    iceberg_catalog_endpoint: glue_iceberg_rest
+    iceberg_catalog_uri_shape: https://glue.<region>.amazonaws.com/iceberg
+    iceberg_warehouse_shape: <account-id>:s3tablescatalog/<table-bucket-name>
+    table_creation: create_if_absent_from_mapping_config
+    schema_evolution: add_missing_columns_union_by_name
+    duplicate_guard: conditional_claim_item_on_bucket_key_versionid
+    rejected_record_metric: emf_dimensioned_by_source_and_reason
+    alert_notification: transition_only_both_directions
+    recovery_notification: rule_config_gated_default_off
+    error_record_behaviour: per_record_reason_code_continue_processing
+    unmapped_path_behaviour: whole_file_rejected_with_reason_code
+    error_prefix_bucket: data-raw
+    s3_notification_prefix_filter: raw/
+    timeout_seconds: 300
+    tracing: false
+    max_expected_rows_per_file: 200000
+    behaviour_source: HLD fn-transform notes + design-document.md section 3.1 worked example
+project_resources:
+- id: data-raw
+  type: s3_bucket
+  arn_hint: arn:aws:s3:::<raw-landing-bucket>
+- id: data-curated
+  type: s3_tables_table_bucket
+  arn_hint: arn:aws:s3tables:eu-west-2:<account-id>:bucket/<curated-table-bucket>
+- id: glue-catalog
+  type: glue_data_catalog
+  arn_hint: arn:aws:glue:eu-west-2:<account-id>:catalog
+- id: ddb-config
+  type: dynamodb_table
+  arn_hint: arn:aws:dynamodb:eu-west-2:<account-id>:table/<config-table>
+- id: ddb-state
+  type: dynamodb_table
+  arn_hint: arn:aws:dynamodb:eu-west-2:<account-id>:table/<state-table>
+- id: event-bus
+  type: eventbridge_event_bus
+  arn_hint: arn:aws:events:eu-west-2:<account-id>:event-bus/<alert-bus>
+- id: cmk
+  type: kms_key
+  arn_hint: arn:aws:kms:eu-west-2:<account-id>:key/<key-id>

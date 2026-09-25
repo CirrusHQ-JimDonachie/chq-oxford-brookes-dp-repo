@@ -1,0 +1,20 @@
+{
+  "dependencies": [
+    {
+      "name": "aws-lambda-powertools",
+      "provided_by": "package",
+      "purpose": "Structured logging, the typed S3 event class and embedded-metric-format metrics"
+    },
+    {
+      "name": "pyiceberg",
+      "provided_by": "package",
+      "purpose": "Iceberg REST catalog client for the curated table create, schema evolution and append"
+    },
+    {
+      "name": "pyarrow",
+      "provided_by": "package",
+      "purpose": "In-memory table the Iceberg append is built from"
+    }
+  ],
+  "tracing": false
+}

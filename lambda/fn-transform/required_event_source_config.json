@@ -1,0 +1,45 @@
+{
+  "constraints": [
+    {
+      "axis": "lambda.timeout_seconds",
+      "value": 300,
+      "rationale": "Sized from the largest file the engine accepts, 200000 rows: the config read, the claim write and the object download, then one pass mapping and validating every row, one Parquet append through the REST catalog, one snapshot write per entity and a conditional write per genuine threshold transition. The SDK budget inside that is 10s read_timeout x 4 total attempts = 40s for any single call, which is inside the 0.8 x 300 = 240s ceiling, and the handler stops work with 15s left so a failure is logged and raised rather than hard-killed."
+    },
+    {
+      "axis": "s3.notification_filter_prefix",
+      "value": "raw/",
+      "required": true,
+      "rationale": "The engine writes rejected files and records to the error prefix of the same bucket. Without the raw/ filter, writing an error record re-triggers the function and the engine loops on its own output."
+    },
+    {
+      "axis": "s3.notification_events",
+      "value": "s3:ObjectCreated:*",
+      "rationale": "The engine acts on a dropped file. Delete and restore notifications carry no object to transform."
+    },
+    {
+      "axis": "async_invocation.on_failure_destination",
+      "required": true,
+      "rationale": "S3 notifications invoke asynchronously, so there is no caller to return an error to. A file that fails every retry must land on the dead-letter queue with an alarm on its depth, or the drop is lost with no signal. Known-bad data never takes this path; it goes to the error prefix and the invocation succeeds."
+    },
+    {
+      "axis": "lambda.memory_mb",
+      "min": 1024,
+      "rationale": "A 200000-row file is held as raw records, mapped records and one Arrow table at the same time. Below about 1 GB the append is the first thing to fail, and Lambda CPU scales with memory, so a smaller setting also lengthens the mapping pass the timeout was sized against."
+    },
+    {
+      "axis": "dynamodb.state_table.ttl_attribute",
+      "value": "ttl",
+      "required": true,
+      "rationale": "Delivery claims carry an expiry in this attribute, set from CLAIM_TTL_DAYS as epoch seconds. If the table's time-to-live is off or configured on a different attribute name, claims accumulate for the life of the table. Snapshot and alert-state items carry no expiry; they are the current state the read API serves."
+    },
+    {
+      "axis": "dynamodb.state_table.claim_attributes",
+      "value": [
+        "status",
+        "claimed_at_epoch"
+      ],
+      "required": true,
+      "rationale": "The claim item is read back and conditionally updated on these two attributes, so the state table's time-to-live must not expire a claim sooner than the 360 second takeover window in the handler. CLAIM_TTL_DAYS is in days, so the dependency holds by a wide margin."
+    }
+  ]
+}

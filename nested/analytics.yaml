@@ -1,0 +1,460 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Analytical read side of the building data platform: the Athena workgroup the
+  curated lake is queried through, the QuickSight data source pointed at it, and
+  the Lake Formation grants that let QuickSight read the curated namespace.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming
+        Parameters:
+          - ProjectSlug
+          - Environment
+      - Label:
+          default: Inputs from the foundation and storage stacks
+        Parameters:
+          - KmsKeyArn
+          - AthenaResultsBucketName
+          - CuratedTableBucketName
+          - CuratedNamespaceName
+      - Label:
+          default: QuickSight
+        Parameters:
+          - QuickSightServiceRoleArn
+          - QuickSightPrincipalArn
+    ParameterLabels:
+      ProjectSlug:
+        default: Project slug
+      Environment:
+        default: Environment
+      KmsKeyArn:
+        default: Data key ARN
+      AthenaResultsBucketName:
+        default: Athena results bucket name
+      CuratedTableBucketName:
+        default: Curated table bucket name
+      CuratedNamespaceName:
+        default: Curated namespace name
+      QuickSightServiceRoleArn:
+        default: QuickSight service role ARN
+      QuickSightPrincipalArn:
+        default: QuickSight user or group ARN
+
+Parameters:
+  ProjectSlug:
+    Type: String
+    Description: Short lowercase name used to build every resource name.
+    AllowedPattern: '^[a-z0-9-]{3,20}$'
+    ConstraintDescription: 3 to 20 characters, lowercase letters, digits and hyphens.
+  Environment:
+    Type: String
+    Description: Environment this stack deploys; part of every resource name.
+    AllowedValues:
+      - dev
+      - test
+      - prod
+  KmsKeyArn:
+    Type: String
+    Description: ARN of the shared data key. Athena encrypts query results with it.
+    AllowedPattern: '^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/.+$'
+    ConstraintDescription: A KMS key ARN.
+  AthenaResultsBucketName:
+    Type: String
+    Description: Name of the bucket the workgroup writes query results to.
+    AllowedPattern: '^[a-z0-9.-]{3,63}$'
+    ConstraintDescription: An S3 bucket name.
+  CuratedTableBucketName:
+    Type: String
+    Description: >-
+      Name of the curated S3 table bucket. It forms the second half of the
+      catalog id the Lake Formation grants below are written against.
+    AllowedPattern: '^[a-z0-9-]{3,63}$'
+    ConstraintDescription: An S3 table bucket name.
+  CuratedNamespaceName:
+    Type: String
+    Description: Namespace inside the curated table bucket that QuickSight reads.
+    AllowedPattern: '^[a-z0-9_]{1,255}$'
+    ConstraintDescription: Lowercase letters, digits and underscores.
+  QuickSightServiceRoleArn:
+    Type: String
+    Description: >-
+      ARN of the IAM role QuickSight runs Athena queries as. Athena runs a query
+      as its caller, so this is the identity the curated data is granted to.
+    AllowedPattern: '^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$'
+    ConstraintDescription: An IAM role ARN.
+  QuickSightPrincipalArn:
+    Type: String
+    Description: >-
+      ARN of the QuickSight user or group that owns the Athena data source and
+      builds datasets on top of it.
+    AllowedPattern: '^arn:aws[a-z-]*:quicksight:[a-z0-9-]+:[0-9]{12}:(user|group)/.+$'
+    ConstraintDescription: A QuickSight user or group ARN.
+
+Resources:
+  AnalyticsWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub '${ProjectSlug}-${Environment}'
+      Description: Queries the curated Iceberg tables and the views built over them.
+      State: ENABLED
+      # A workgroup holding saved queries cannot be deleted without this, so a
+      # stack delete would stall on it once anyone has saved one.
+      RecursiveDeleteOption: true
+      WorkGroupConfiguration:
+        # While this is true the result location and encryption settings below
+        # apply to every query in the workgroup and any client-side setting is
+        # ignored, so no caller can write results somewhere unencrypted.
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        RequesterPaysEnabled: false
+        EngineVersion:
+          SelectedEngineVersion: AUTO
+        ResultConfiguration:
+          # Scoped under its own prefix, not the bucket root, so the 7-day
+          # lifecycle rule on this prefix (storage.yaml) doesn't reach the
+          # QuickSight flat tables living under curated-flat/ below.
+          OutputLocation: !Sub 's3://${AthenaResultsBucketName}/query-results/'
+          # Pins the results bucket to this account, so a bucket of the same
+          # name recreated elsewhere cannot receive query output.
+          ExpectedBucketOwner: !Ref AWS::AccountId
+          EncryptionConfiguration:
+            EncryptionOption: SSE_KMS
+            KmsKey: !Ref KmsKeyArn
+
+  AthenaDataSource:
+    Type: AWS::QuickSight::DataSource
+    Properties:
+      AwsAccountId: !Ref AWS::AccountId
+      DataSourceId: !Sub '${ProjectSlug}-${Environment}-athena'
+      Name: !Sub '${ProjectSlug}-${Environment}-athena'
+      Type: ATHENA
+      DataSourceParameters:
+        AthenaParameters:
+          WorkGroup: !Ref AnalyticsWorkGroup
+      SslProperties:
+        DisableSsl: false
+      # The account must already be subscribed to QuickSight in this region and
+      # the principal below must exist there, or the create call fails. The
+      # datasets, dashboards and Q topic are built in the QuickSight console on
+      # top of this data source.
+      Permissions:
+        - Principal: !Ref QuickSightPrincipalArn
+          Actions:
+            - quicksight:DescribeDataSource
+            - quicksight:DescribeDataSourcePermissions
+            - quicksight:PassDataSource
+            - quicksight:UpdateDataSource
+            - quicksight:UpdateDataSourcePermissions
+            - quicksight:DeleteDataSource
+
+  # A database in the federated S3 Tables catalog is addressed by
+  # <account>:s3tablescatalog/<table bucket>, not by the account id on its own.
+  QuickSightDatabaseGrant:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !Ref QuickSightServiceRoleArn
+      Resource:
+        Database:
+          CatalogId: !Sub '${AWS::AccountId}:s3tablescatalog/${CuratedTableBucketName}'
+          Name: !Ref CuratedNamespaceName
+      Permissions:
+        - DESCRIBE
+      PermissionsWithGrantOption: []
+
+  # A wildcard over the namespace, so tables the transform function creates
+  # later are readable without another grant.
+  QuickSightTableGrant:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !Ref QuickSightServiceRoleArn
+      Resource:
+        Table:
+          CatalogId: !Sub '${AWS::AccountId}:s3tablescatalog/${CuratedTableBucketName}'
+          DatabaseName: !Ref CuratedNamespaceName
+          TableWildcard: {}
+      Permissions:
+        - SELECT
+        - DESCRIBE
+      PermissionsWithGrantOption: []
+
+  # Mirrors QuickSightDatabaseGrant/QuickSightTableGrant: the refresh job
+  # reads the same curated source those do. Being a Lake Formation admin
+  # (foundation.yaml) resolves the federated catalog at all, but data access
+  # still needs its own grant — confirmed directly, admin status alone still
+  # hit "Insufficient permissions... Principal does not have any privilege on
+  # specified resource" on the source table until this was added.
+  FlatRefreshSourceDatabaseGrant:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt FlatRefreshRole.Arn
+      Resource:
+        Database:
+          CatalogId: !Sub '${AWS::AccountId}:s3tablescatalog/${CuratedTableBucketName}'
+          Name: !Ref CuratedNamespaceName
+      Permissions:
+        - DESCRIBE
+      PermissionsWithGrantOption: []
+
+  FlatRefreshSourceTableGrant:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt FlatRefreshRole.Arn
+      Resource:
+        Table:
+          CatalogId: !Sub '${AWS::AccountId}:s3tablescatalog/${CuratedTableBucketName}'
+          DatabaseName: !Ref CuratedNamespaceName
+          TableWildcard: {}
+      Permissions:
+        - SELECT
+        - DESCRIBE
+      PermissionsWithGrantOption: []
+
+  # ---------- QuickSight flat table + scheduled refresh ----------
+  # QuickSight cannot query the S3 Tables federated catalog directly for SPICE
+  # ingestion (confirmed directly: every attempt fails with CATALOG_NOT_FOUND,
+  # even with full IAM and Lake Formation grants), and Athena refuses
+  # CREATE VIEW across that same catalog boundary ("CREATE VIEW statements are
+  # not yet supported for Cross-Account Glue DataCatalogs"). So the flat table
+  # QuickSight reads is a real, plain table in the default Glue catalog,
+  # refreshed on a schedule by INSERT INTO rather than being a live view.
+  FlatViewsDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub '${CuratedNamespaceName}_views'
+        Description: Plain Athena tables over the S3 Tables federated catalog, for consumers that cannot address it directly.
+
+  BmsEnvironmentalFlatTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref FlatViewsDatabase
+      TableInput:
+        Name: bms_environmental_flat
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+          'parquet.compress': SNAPPY
+        StorageDescriptor:
+          Location: !Sub 's3://${AthenaResultsBucketName}/curated-flat/bms_environmental/'
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Columns:
+            - {Name: room_id, Type: string}
+            - {Name: reading_at, Type: timestamp}
+            - {Name: temperature_c, Type: double}
+            - {Name: humidity_pct, Type: double}
+            - {Name: source_file, Type: string}
+            - {Name: ingested_at, Type: timestamp}
+
+  # Mirrors QuickSightTableGrant/QuickSightDatabaseGrant: harmless if this
+  # catalog's tables stay IAM-governed, load-bearing if the account's data
+  # lake settings ever cover the default catalog too.
+  FlatTableGrant:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt FlatRefreshRole.Arn
+      Resource:
+        Table:
+          CatalogId: !Ref AWS::AccountId
+          DatabaseName: !Ref FlatViewsDatabase
+          Name: !Ref BmsEnvironmentalFlatTable
+      Permissions:
+        - SELECT
+        - DESCRIBE
+        - ALTER
+        - INSERT
+      PermissionsWithGrantOption: []
+
+  FlatRefreshRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # Named, unlike every other role in this project (see DEPLOYMENT.md),
+      # so foundation.yaml's DataLakeSettings can add it to the Lake
+      # Formation admins list by a predictable ARN, without a forward
+      # cross-stack reference to a stack that deploys after it.
+      RoleName: !Sub '${ProjectSlug}-${Environment}-flat-refresh'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: flat-refresh
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: RunAthenaQueries
+                Effect: Allow
+                Action:
+                  - 'athena:StartQueryExecution'
+                  - 'athena:GetQueryExecution'
+                  - 'athena:GetQueryResults'
+                  - 'athena:StopQueryExecution'
+                Resource: !Sub 'arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AnalyticsWorkGroup}'
+              # The athena:startQueryExecution.sync Step Functions integration
+              # polls through an AWS-managed EventBridge rule of this fixed
+              # name, created once per account/region the first time any state
+              # machine uses it.
+              - Sid: TrackAthenaCompletion
+                Effect: Allow
+                Action:
+                  - 'events:PutTargets'
+                  - 'events:PutRule'
+                  - 'events:DescribeRule'
+                Resource: !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventForAthenaStartQueryExecutionRule'
+              - Sid: ReadWriteResultsBucket
+                Effect: Allow
+                Action:
+                  - 's3:GetBucketLocation'
+                  - 's3:ListBucket'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${AthenaResultsBucketName}'
+              - Sid: ReadWriteResultsObjects
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${AthenaResultsBucketName}/*'
+              - Sid: UseDataKey
+                Effect: Allow
+                Action:
+                  - 'kms:Decrypt'
+                  - 'kms:GenerateDataKey'
+                Resource: !Ref KmsKeyArn
+              # Same 5-ARN Glue Iceberg REST resource list as the transform
+              # function's role (engine.yaml) — read-only subset, this job
+              # never writes the curated table.
+              - Sid: ReadCuratedCatalog
+                Effect: Allow
+                Action:
+                  - 'glue:GetCatalog'
+                  - 'glue:GetDatabase'
+                  - 'glue:GetDatabases'
+                  - 'glue:GetTable'
+                  - 'glue:GetTables'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog/${CuratedTableBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}/*'
+              - Sid: VendCuratedDataCredentials
+                Effect: Allow
+                Action: 'lakeformation:GetDataAccess'
+                Resource: '*'
+              - Sid: ReadWriteFlatTable
+                Effect: Allow
+                Action:
+                  - 'glue:GetDatabase'
+                  - 'glue:GetTable'
+                  - 'glue:GetTables'
+                  - 'glue:UpdateTable'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/${CuratedNamespaceName}_views'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/${CuratedNamespaceName}_views/*'
+              # CreateIngestion authorizes against the ingestion sub-resource,
+              # not the dataset itself — confirmed directly, a Resource scoped
+              # to just the dataset ARN was denied.
+              - Sid: RefreshSpiceDataset
+                Effect: Allow
+                Action: 'quicksight:CreateIngestion'
+                Resource: !Sub 'arn:${AWS::Partition}:quicksight:${AWS::Region}:${AWS::AccountId}:dataset/${ProjectSlug}-${Environment}-bms-environmental/ingestion/*'
+
+  FlatRefreshStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub '${ProjectSlug}-${Environment}-flat-refresh'
+      # STANDARD, not EXPRESS: the athena:startQueryExecution.sync integration
+      # (wait for the query to finish before refreshing SPICE) is a Standard-
+      # workflow-only feature — confirmed directly, Express rejected it at
+      # deploy with SCHEMA_VALIDATION_FAILED. An hourly two-step job has no
+      # need for Express's high-throughput/short-duration profile anyway.
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt FlatRefreshRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Appends new curated rows into the QuickSight flat table, then refreshes its SPICE dataset.",
+          "StartAt": "AppendNewRows",
+          "States": {
+            "AppendNewRows": {
+              "Type": "Task",
+              "Resource": "arn:${AWS::Partition}:states:::athena:startQueryExecution.sync",
+              "Parameters": {
+                "WorkGroup": "${AnalyticsWorkGroup}",
+                "QueryString": "INSERT INTO \"${CuratedNamespaceName}_views\".\"bms_environmental_flat\" SELECT room_id, CAST(reading_at AS timestamp) AS reading_at, temperature_c, humidity_pct, source_file, CAST(ingested_at AS timestamp) AS ingested_at FROM \"s3tablescatalog/${CuratedTableBucketName}\".\"${CuratedNamespaceName}\".\"bms_environmental\" WHERE CAST(ingested_at AS timestamp) > (SELECT COALESCE(MAX(ingested_at), TIMESTAMP '1970-01-01 00:00:00') FROM \"${CuratedNamespaceName}_views\".\"bms_environmental_flat\")"
+              },
+              "Next": "RefreshSpiceDataset"
+            },
+            "RefreshSpiceDataset": {
+              "Type": "Task",
+              "Resource": "arn:${AWS::Partition}:states:::aws-sdk:quicksight:createIngestion",
+              "Parameters": {
+                "AwsAccountId": "${AWS::AccountId}",
+                "DataSetId": "${ProjectSlug}-${Environment}-bms-environmental",
+                "IngestionId.$": "$$.Execution.Name"
+              },
+              "End": true
+            }
+          }
+        }
+
+  FlatRefreshSchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: invoke-flat-refresh
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'states:StartExecution'
+                Resource: !Ref FlatRefreshStateMachine
+
+  # Matches "SPICE refresh floor is hourly" (DEPLOYMENT.md / design-document.md
+  # 5.12) — no point refreshing the flat table more often than SPICE itself
+  # can pick it up.
+  FlatRefreshSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub '${ProjectSlug}-${Environment}-flat-refresh'
+      Description: 'Hourly: append new curated rows into the QuickSight flat table, then refresh its SPICE dataset.'
+      ScheduleExpression: rate(1 hour)
+      FlexibleTimeWindow:
+        Mode: 'OFF'
+      Target:
+        Arn: !Ref FlatRefreshStateMachine
+        RoleArn: !GetAtt FlatRefreshSchedulerRole.Arn
+
+Outputs:
+  AthenaWorkGroupName:
+    Description: Name of the Athena workgroup that queries the curated lake.
+    Value: !Ref AnalyticsWorkGroup
+  QuickSightDataSourceArn:
+    Description: ARN of the QuickSight data source that reads through the workgroup.
+    Value: !GetAtt AthenaDataSource.Arn

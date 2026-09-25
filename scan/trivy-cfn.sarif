@@ -1,0 +1,620 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "fullName": "Trivy Vulnerability Scanner",
+          "informationUri": "https://github.com/aquasecurity/trivy",
+          "name": "Trivy",
+          "rules": [
+            {
+              "id": "AWS-0003",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "API Gateway must have X-Ray tracing enabled"
+              },
+              "fullDescription": {
+                "text": "X-Ray tracing enables end-to-end debugging and analysis of all API Gateway HTTP requests.\n"
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0003",
+              "help": {
+                "text": "Misconfiguration AWS-0003\nType: CloudFormation Security Check\nSeverity: LOW\nCheck: API Gateway must have X-Ray tracing enabled\nMessage: X-Ray tracing is not enabled.\nLink: [AWS-0003](https://avd.aquasec.com/misconfig/aws-0003)\nX-Ray tracing enables end-to-end debugging and analysis of all API Gateway HTTP requests.\n",
+                "markdown": "**Misconfiguration AWS-0003**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|CloudFormation Security Check|LOW|API Gateway must have X-Ray tracing enabled|X-Ray tracing is not enabled.|[AWS-0003](https://avd.aquasec.com/misconfig/aws-0003)|\n\nX-Ray tracing enables end-to-end debugging and analysis of all API Gateway HTTP requests.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0017",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "CloudWatch log groups should be encrypted using CMK"
+              },
+              "fullDescription": {
+                "text": "CloudWatch log groups are encrypted by default, however, to get the full benefit of controlling key rotation and other KMS aspects a KMS CMK should be used.\n"
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0017",
+              "help": {
+                "text": "Misconfiguration AWS-0017\nType: CloudFormation Security Check\nSeverity: LOW\nCheck: CloudWatch log groups should be encrypted using CMK\nMessage: Log group is not encrypted.\nLink: [AWS-0017](https://avd.aquasec.com/misconfig/aws-0017)\nCloudWatch log groups are encrypted by default, however, to get the full benefit of controlling key rotation and other KMS aspects a KMS CMK should be used.\n",
+                "markdown": "**Misconfiguration AWS-0017**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|CloudFormation Security Check|LOW|CloudWatch log groups should be encrypted using CMK|Log group is not encrypted.|[AWS-0017](https://avd.aquasec.com/misconfig/aws-0017)|\n\nCloudWatch log groups are encrypted by default, however, to get the full benefit of controlling key rotation and other KMS aspects a KMS CMK should be used.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0025",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "DynamoDB tables should use at rest encryption with a Customer Managed Key"
+              },
+              "fullDescription": {
+                "text": "Using AWS managed keys does not allow for fine grained control. DynamoDB tables are encrypted by default using AWS managed encryption keys. To increase control of the encryption and control the management of factors like key rotation, use a Customer Managed Key.\n"
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0025",
+              "help": {
+                "text": "Misconfiguration AWS-0025\nType: CloudFormation Security Check\nSeverity: LOW\nCheck: DynamoDB tables should use at rest encryption with a Customer Managed Key\nMessage: Table encryption explicitly uses the default KMS key.\nLink: [AWS-0025](https://avd.aquasec.com/misconfig/aws-0025)\nUsing AWS managed keys does not allow for fine grained control. DynamoDB tables are encrypted by default using AWS managed encryption keys. To increase control of the encryption and control the management of factors like key rotation, use a Customer Managed Key.\n",
+                "markdown": "**Misconfiguration AWS-0025**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|CloudFormation Security Check|LOW|DynamoDB tables should use at rest encryption with a Customer Managed Key|Table encryption explicitly uses the default KMS key.|[AWS-0025](https://avd.aquasec.com/misconfig/aws-0025)|\n\nUsing AWS managed keys does not allow for fine grained control. DynamoDB tables are encrypted by default using AWS managed encryption keys. To increase control of the encryption and control the management of factors like key rotation, use a Customer Managed Key.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0089",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "S3 Bucket Logging"
+              },
+              "fullDescription": {
+                "text": "Ensures S3 bucket logging is enabled for S3 buckets"
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0089",
+              "help": {
+                "text": "Misconfiguration AWS-0089\nType: CloudFormation Security Check\nSeverity: LOW\nCheck: S3 Bucket Logging\nMessage: Bucket has logging disabled\nLink: [AWS-0089](https://avd.aquasec.com/misconfig/aws-0089)\nEnsures S3 bucket logging is enabled for S3 buckets",
+                "markdown": "**Misconfiguration AWS-0089**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|CloudFormation Security Check|LOW|S3 Bucket Logging|Bucket has logging disabled|[AWS-0089](https://avd.aquasec.com/misconfig/aws-0089)|\n\nEnsures S3 bucket logging is enabled for S3 buckets"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0095",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Unencrypted SNS topic."
+              },
+              "fullDescription": {
+                "text": "Topics should be encrypted to protect their contents.\n"
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0095",
+              "help": {
+                "text": "Misconfiguration AWS-0095\nType: CloudFormation Security Check\nSeverity: HIGH\nCheck: Unencrypted SNS topic.\nMessage: Topic does not have encryption enabled.\nLink: [AWS-0095](https://avd.aquasec.com/misconfig/aws-0095)\nTopics should be encrypted to protect their contents.\n",
+                "markdown": "**Misconfiguration AWS-0095**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|CloudFormation Security Check|HIGH|Unencrypted SNS topic.|Topic does not have encryption enabled.|[AWS-0095](https://avd.aquasec.com/misconfig/aws-0095)|\n\nTopics should be encrypted to protect their contents.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0096",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Unencrypted SQS queue."
+              },
+              "fullDescription": {
+                "text": "Queues should be encrypted to protect queue contents.\n"
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0096",
+              "help": {
+                "text": "Misconfiguration AWS-0096\nType: CloudFormation Security Check\nSeverity: HIGH\nCheck: Unencrypted SQS queue.\nMessage: Queue is not encrypted\nLink: [AWS-0096](https://avd.aquasec.com/misconfig/aws-0096)\nQueues should be encrypted to protect queue contents.\n",
+                "markdown": "**Misconfiguration AWS-0096**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|CloudFormation Security Check|HIGH|Unencrypted SQS queue.|Queue is not encrypted|[AWS-0096](https://avd.aquasec.com/misconfig/aws-0096)|\n\nQueues should be encrypted to protect queue contents.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0125",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "SAM Function must have X-Ray tracing enabled"
+              },
+              "fullDescription": {
+                "text": "X-Ray tracing enables end-to-end debugging and analysis of the function.\n"
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0125",
+              "help": {
+                "text": "Misconfiguration AWS-0125\nType: CloudFormation Security Check\nSeverity: LOW\nCheck: SAM Function must have X-Ray tracing enabled\nMessage: X-Ray tracing is not enabled\nLink: [AWS-0125](https://avd.aquasec.com/misconfig/aws-0125)\nX-Ray tracing enables end-to-end debugging and analysis of the function.\n",
+                "markdown": "**Misconfiguration AWS-0125**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|CloudFormation Security Check|LOW|SAM Function must have X-Ray tracing enabled|X-Ray tracing is not enabled|[AWS-0125](https://avd.aquasec.com/misconfig/aws-0125)|\n\nX-Ray tracing enables end-to-end debugging and analysis of the function.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0132",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "S3 encryption should use Customer Managed Keys"
+              },
+              "fullDescription": {
+                "text": "Encryption using AWS keys provides protection for your S3 buckets. To gain greater control over encryption, such as key rotation, access policies, and auditability, use customer managed keys (CMKs) with SSE-KMS.\nNote that SSE-KMS is not supported for S3 server access logging destination buckets; in such cases, use SSE-S3 instead.\n"
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0132",
+              "help": {
+                "text": "Misconfiguration AWS-0132\nType: CloudFormation Security Check\nSeverity: HIGH\nCheck: S3 encryption should use Customer Managed Keys\nMessage: Bucket does not encrypt data with a customer managed key.\nLink: [AWS-0132](https://avd.aquasec.com/misconfig/aws-0132)\nEncryption using AWS keys provides protection for your S3 buckets. To gain greater control over encryption, such as key rotation, access policies, and auditability, use customer managed keys (CMKs) with SSE-KMS.\nNote that SSE-KMS is not supported for S3 server access logging destination buckets; in such cases, use SSE-S3 instead.\n",
+                "markdown": "**Misconfiguration AWS-0132**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|CloudFormation Security Check|HIGH|S3 encryption should use Customer Managed Keys|Bucket does not encrypt data with a customer managed key.|[AWS-0132](https://avd.aquasec.com/misconfig/aws-0132)|\n\nEncryption using AWS keys provides protection for your S3 buckets. To gain greater control over encryption, such as key rotation, access policies, and auditability, use customer managed keys (CMKs) with SSE-KMS.\nNote that SSE-KMS is not supported for S3 server access logging destination buckets; in such cases, use SSE-S3 instead.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0090",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "S3 Data should be versioned"
+              },
+              "fullDescription": {
+                "text": "Versioning in Amazon S3 is a means of keeping multiple variants of an object in the same bucket.\n\nYou can use the S3 Versioning feature to preserve, retrieve, and restore every version of every object stored in your buckets.\n\nWith versioning you can recover more easily from both unintended user actions and application failures.\n\nWhen you enable versioning, also keep in mind the potential costs of storing noncurrent versions of objects. To help manage those costs, consider setting up an S3 Lifecycle configuration.\n"
+              },
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0090",
+              "help": {
+                "text": "Misconfiguration AWS-0090\nType: CloudFormation Security Check\nSeverity: MEDIUM\nCheck: S3 Data should be versioned\nMessage: Bucket does not have versioning enabled\nLink: [AWS-0090](https://avd.aquasec.com/misconfig/aws-0090)\nVersioning in Amazon S3 is a means of keeping multiple variants of an object in the same bucket.\n\nYou can use the S3 Versioning feature to preserve, retrieve, and restore every version of every object stored in your buckets.\n\nWith versioning you can recover more easily from both unintended user actions and application failures.\n\nWhen you enable versioning, also keep in mind the potential costs of storing noncurrent versions of objects. To help manage those costs, consider setting up an S3 Lifecycle configuration.\n",
+                "markdown": "**Misconfiguration AWS-0090**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|CloudFormation Security Check|MEDIUM|S3 Data should be versioned|Bucket does not have versioning enabled|[AWS-0090](https://avd.aquasec.com/misconfig/aws-0090)|\n\nVersioning in Amazon S3 is a means of keeping multiple variants of an object in the same bucket.\n\nYou can use the S3 Versioning feature to preserve, retrieve, and restore every version of every object stored in your buckets.\n\nWith versioning you can recover more easily from both unintended user actions and application failures.\n\nWhen you enable versioning, also keep in mind the potential costs of storing noncurrent versions of objects. To help manage those costs, consider setting up an S3 Lifecycle configuration.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "5.5",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "MEDIUM"
+                ]
+              }
+            }
+          ],
+          "version": "0.70.0"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "AWS-0003",
+          "ruleIndex": 0,
+          "level": "note",
+          "message": {
+            "text": "Artifact: nested/api.yaml\nType: cloudformation\nVulnerability AWS-0003\nSeverity: LOW\nMessage: X-Ray tracing is not enabled.\nLink: [AWS-0003](https://avd.aquasec.com/misconfig/aws-0003)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/api.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 380,
+                  "startColumn": 1,
+                  "endLine": 380,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/api.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0017",
+          "ruleIndex": 1,
+          "level": "note",
+          "message": {
+            "text": "Artifact: nested/api.yaml\nType: cloudformation\nVulnerability AWS-0017\nSeverity: LOW\nMessage: Log group is not encrypted.\nLink: [AWS-0017](https://avd.aquasec.com/misconfig/aws-0017)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/api.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 168,
+                  "startColumn": 1,
+                  "endLine": 173,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/api.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0017",
+          "ruleIndex": 1,
+          "level": "note",
+          "message": {
+            "text": "Artifact: nested/engine.yaml\nType: cloudformation\nVulnerability AWS-0017\nSeverity: LOW\nMessage: Log group is not encrypted.\nLink: [AWS-0017](https://avd.aquasec.com/misconfig/aws-0017)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/engine.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 279,
+                  "startColumn": 1,
+                  "endLine": 287,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/engine.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0025",
+          "ruleIndex": 2,
+          "level": "note",
+          "message": {
+            "text": "Artifact: nested/engine.yaml\nType: cloudformation\nVulnerability AWS-0025\nSeverity: LOW\nMessage: Table encryption explicitly uses the default KMS key.\nLink: [AWS-0025](https://avd.aquasec.com/misconfig/aws-0025)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/engine.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 539,
+                  "startColumn": 1,
+                  "endLine": 541,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/engine.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0025",
+          "ruleIndex": 2,
+          "level": "note",
+          "message": {
+            "text": "Artifact: nested/engine.yaml\nType: cloudformation\nVulnerability AWS-0025\nSeverity: LOW\nMessage: Table encryption explicitly uses the default KMS key.\nLink: [AWS-0025](https://avd.aquasec.com/misconfig/aws-0025)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/engine.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 563,
+                  "startColumn": 1,
+                  "endLine": 565,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/engine.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0089",
+          "ruleIndex": 3,
+          "level": "note",
+          "message": {
+            "text": "Artifact: nested/engine.yaml\nType: cloudformation\nVulnerability AWS-0089\nSeverity: LOW\nMessage: Bucket has logging disabled\nLink: [AWS-0089](https://avd.aquasec.com/misconfig/aws-0089)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/engine.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 181,
+                  "startColumn": 1,
+                  "endLine": 235,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/engine.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0095",
+          "ruleIndex": 4,
+          "level": "error",
+          "message": {
+            "text": "Artifact: nested/engine.yaml\nType: cloudformation\nVulnerability AWS-0095\nSeverity: HIGH\nMessage: Topic does not have encryption enabled.\nLink: [AWS-0095](https://avd.aquasec.com/misconfig/aws-0095)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/engine.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 614,
+                  "startColumn": 1,
+                  "endLine": 618,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/engine.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0096",
+          "ruleIndex": 5,
+          "level": "error",
+          "message": {
+            "text": "Artifact: nested/engine.yaml\nType: cloudformation\nVulnerability AWS-0096\nSeverity: HIGH\nMessage: Queue is not encrypted\nLink: [AWS-0096](https://avd.aquasec.com/misconfig/aws-0096)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/engine.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 578,
+                  "startColumn": 1,
+                  "endLine": 583,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/engine.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0125",
+          "ruleIndex": 6,
+          "level": "note",
+          "message": {
+            "text": "Artifact: nested/engine.yaml\nType: cloudformation\nVulnerability AWS-0125\nSeverity: LOW\nMessage: X-Ray tracing is not enabled\nLink: [AWS-0125](https://avd.aquasec.com/misconfig/aws-0125)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/engine.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 419,
+                  "startColumn": 1,
+                  "endLine": 465,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/engine.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0132",
+          "ruleIndex": 7,
+          "level": "error",
+          "message": {
+            "text": "Artifact: nested/engine.yaml\nType: cloudformation\nVulnerability AWS-0132\nSeverity: HIGH\nMessage: Bucket does not encrypt data with a customer managed key.\nLink: [AWS-0132](https://avd.aquasec.com/misconfig/aws-0132)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/engine.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 181,
+                  "startColumn": 1,
+                  "endLine": 235,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/engine.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0089",
+          "ruleIndex": 3,
+          "level": "note",
+          "message": {
+            "text": "Artifact: nested/storage.yaml\nType: cloudformation\nVulnerability AWS-0089\nSeverity: LOW\nMessage: Bucket has logging disabled\nLink: [AWS-0089](https://avd.aquasec.com/misconfig/aws-0089)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/storage.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 93,
+                  "startColumn": 1,
+                  "endLine": 124,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/storage.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0090",
+          "ruleIndex": 8,
+          "level": "warning",
+          "message": {
+            "text": "Artifact: nested/storage.yaml\nType: cloudformation\nVulnerability AWS-0090\nSeverity: MEDIUM\nMessage: Bucket does not have versioning enabled\nLink: [AWS-0090](https://avd.aquasec.com/misconfig/aws-0090)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/storage.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 115,
+                  "startColumn": 1,
+                  "endLine": 115,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/storage.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0132",
+          "ruleIndex": 7,
+          "level": "error",
+          "message": {
+            "text": "Artifact: nested/storage.yaml\nType: cloudformation\nVulnerability AWS-0132\nSeverity: HIGH\nMessage: Bucket does not encrypt data with a customer managed key.\nLink: [AWS-0132](https://avd.aquasec.com/misconfig/aws-0132)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "nested/storage.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 93,
+                  "startColumn": 1,
+                  "endLine": 124,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "nested/storage.yaml"
+              }
+            }
+          ]
+        }
+      ],
+      "columnKind": "utf16CodeUnits",
+      "originalUriBaseIds": {
+        "ROOTPATH": {
+          "uri": "file:///scan/cloudformation/"
+        }
+      }
+    }
+  ]
+}

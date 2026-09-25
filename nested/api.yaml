@@ -1,0 +1,399 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Read API: a Cognito-protected REST endpoint that returns the current snapshot
+  for one entity straight from the state table, with no function in the path.
+  Child stack of main.yaml.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming
+        Parameters:
+          - ProjectSlug
+          - Environment
+      - Label:
+          default: State store
+        Parameters:
+          - StateTableName
+          - StateTableArn
+          - ApiEntityType
+      - Label:
+          default: Encryption and logging
+        Parameters:
+          - KmsKeyArn
+          - LogRetentionDays
+    ParameterLabels:
+      ProjectSlug:
+        default: Project slug
+      Environment:
+        default: Environment
+      StateTableName:
+        default: State table name
+      StateTableArn:
+        default: State table ARN
+      ApiEntityType:
+        default: Entity type served by the read API
+      KmsKeyArn:
+        default: Data key ARN
+      LogRetentionDays:
+        default: Log retention (days)
+
+Parameters:
+  ProjectSlug:
+    Type: String
+    Description: Short lowercase name used to build every resource name.
+    AllowedPattern: '^[a-z0-9-]{3,20}$'
+    ConstraintDescription: 3 to 20 characters, lowercase letters, digits and hyphens.
+  Environment:
+    Type: String
+    Description: Environment this stack deploys; part of every resource name.
+    AllowedValues:
+      - dev
+      - test
+      - prod
+  StateTableName:
+    Type: String
+    Description: Name of the table holding the current snapshot for each entity.
+    MinLength: 3
+  StateTableArn:
+    Type: String
+    Description: ARN of the same table, used to scope the read grant to it.
+    AllowedPattern: '^arn:aws[a-z-]*:dynamodb:[a-z0-9-]+:[0-9]{12}:table/.+$'
+    ConstraintDescription: A DynamoDB table ARN.
+  ApiEntityType:
+    Type: String
+    Description: >-
+      Entity type whose current snapshot the read API serves; must match the
+      entity type in the mapping config of the source that feeds it.
+    Default: room
+    AllowedPattern: '^[a-z0-9_-]{1,64}$'
+    ConstraintDescription: Lowercase letters, digits, underscores and hyphens.
+  KmsKeyArn:
+    Type: String
+    Description: ARN of the key that encrypts the state table and the API access log group.
+    AllowedPattern: '^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]{36}$'
+    ConstraintDescription: A KMS key ARN.
+  LogRetentionDays:
+    Type: Number
+    Description: Retention for the API access log group.
+    Default: 30
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1096
+      - 1827
+      - 2192
+      - 2557
+      - 2922
+      - 3288
+      - 3653
+
+Resources:
+  # Retained on stack delete and on replacement: the pool holds the accounts the
+  # Customer's client signs in with, and nothing upstream can rebuild them. To
+  # retire it, clear DeletionProtection and both policies in their own
+  # deployment, delete the stack, then put them back if the stack is rebuilt.
+  ReadApiUserPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: !Sub '${ProjectSlug}-${Environment}-read-api'
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      AdminCreateUserConfig:
+        # Sign-up is closed: accounts exist only because an administrator created
+        # them with AdminCreateUser.
+        AllowAdminCreateUserOnly: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          TemporaryPasswordValidityDays: 7
+      # Off for the demo user set. Turning it on is a console change on the pool
+      # and needs no redeployment.
+      MfaConfiguration: 'OFF'
+      # Deletion protection makes the Cognito delete call fail, so a stack delete
+      # fails with it on. Turn it off in a separate deployment first.
+      DeletionProtection: ACTIVE
+
+  ReadApiUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref ReadApiUserPool
+      ClientName: !Sub '${ProjectSlug}-${Environment}-read-api'
+      # The client runs in a browser and cannot hold a secret, so it signs in
+      # with SRP through InitiateAuth and sends the resulting token as a bearer
+      # token. No hosted UI and no OAuth flows are involved.
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      # A sign-in against an unknown address fails the same way as a wrong
+      # password, so the pool cannot be used to enumerate addresses.
+      PreventUserExistenceErrors: ENABLED
+
+  # Nothing in this configuration checks group membership: the method authorizer
+  # accepts any signed-in user of the pool. The group is the hook a later
+  # per-role rule attaches to.
+  ReadApiReadersGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref ReadApiUserPool
+      GroupName: readers
+      Description: Users entitled to read the current snapshot.
+
+  # The data key's policy grants CloudWatch Logs against this exact group ARN, so
+  # a change to the group name needs the same change in the key policy or log
+  # delivery stops.
+  ReadApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/${ProjectSlug}-${Environment}-read-api'
+      KmsKeyId: !Ref KmsKeyArn
+      RetentionInDays: !Ref LogRetentionDays
+
+  ApiGatewayLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Role API Gateway writes CloudWatch Logs under, for every API in this region.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ApiGatewayAssumesThisRole
+            Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs'
+
+  # An account holds one of these per region, shared by every API in it.
+  # Deploying replaces whatever role the account already has set there. Deleting
+  # this stack does not revoke the access on its own: API Gateway can still
+  # assume a role it was handed, so revoking means changing that role's
+  # permissions or its trust.
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayLogsRole.Arn
+
+  ReadApiIntegrationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Read access to the state table for the API Gateway integration.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ApiGatewayAssumesThisRole
+            Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+            # No aws:SourceAccount condition: confirmed directly, by testing,
+            # that API Gateway does not populate it for this direct-integration
+            # credentials use, the same confused-deputy gap already flagged
+            # below for the alert topic. With it in place, every request to
+            # the read API failed the AssumeRole and API Gateway returned its
+            # own generic 500 before the integration — and DynamoDB — ever
+            # ran, never reaching the custom 5xx response template below. The
+            # role's own permissions stay narrow regardless: GetItem on this
+            # one state table and Decrypt on this one key, nothing else.
+      Policies:
+        - PolicyName: read-current-snapshot
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadSnapshotItem
+                Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: !Ref StateTableArn
+              - Sid: UseDataKey
+                # The table is encrypted with the project key; the read path
+                # decrypts under it.
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref KmsKeyArn
+
+  # No resource policy: the endpoint is open to the internet and every request is
+  # checked by the Cognito authorizer below. An address allow-list would be a
+  # second, independent gate on top.
+  ReadApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${ProjectSlug}-${Environment}-read-api'
+      Description: Current snapshot for one entity, read straight from the state table.
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      DisableExecuteApiEndpoint: false
+
+  CognitoAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: !Sub '${ProjectSlug}-${Environment}-read-api-users'
+      RestApiId: !Ref ReadApi
+      Type: COGNITO_USER_POOLS
+      ProviderARNs:
+        - !GetAtt ReadApiUserPool.Arn
+      IdentitySource: method.request.header.Authorization
+
+  RoomsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ReadApi
+      ParentId: !GetAtt ReadApi.RootResourceId
+      PathPart: rooms
+
+  RoomResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ReadApi
+      ParentId: !Ref RoomsResource
+      PathPart: '{roomId}'
+
+  GetRoomMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ReadApi
+      ResourceId: !Ref RoomResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      ApiKeyRequired: false
+      RequestParameters:
+        method.request.path.roomId: true
+      Integration:
+        Type: AWS
+        # The DynamoDB action is addressed in the URI and the call itself is
+        # always a POST, whatever method the client used.
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:dynamodb:action/GetItem'
+        Credentials: !GetAtt ReadApiIntegrationRole.Arn
+        # A request whose content type has no template below is rejected rather
+        # than forwarded to DynamoDB unchanged.
+        PassthroughBehavior: NEVER
+        RequestTemplates:
+          # escapeJavaScript turns an apostrophe in the path value into an
+          # escaped one, which JSON does not accept, so it is turned back before
+          # the value lands in the request body.
+          application/json: !Sub |
+            {
+              "TableName": "${StateTableName}",
+              "Key": {
+                "pk": { "S": "${ApiEntityType}#$util.escapeJavaScript($input.params('roomId')).replaceAll("\\'","'")" },
+                "sk": { "S": "snapshot" }
+              }
+            }
+        IntegrationResponses:
+          # The entry with no SelectionPattern is the one that carries a
+          # successful call. The two below it catch a failed one, so a rejected
+          # or throttled read is never returned as a 200 with an empty body.
+          - StatusCode: '200'
+            ResponseTemplates:
+              # DynamoDB answers a miss with an empty object and a 200. The
+              # override turns that into a 404, which is what the client needs
+              # to see. The rest flattens the item's typed attribute map into
+              # plain JSON; the attribute names come from the mapping config, so
+              # the template reads them off the item rather than naming them.
+              application/json: |
+                #set($root = $input.path('$'))
+                #if($root.containsKey("Item"))
+                #set($item = $root.get("Item"))
+                #set($sep = "")
+                {
+                #foreach($name in $item.keySet())
+                #set($value = $item.get($name))
+                #if($value.containsKey("S"))
+                $sep"$name": "$util.escapeJavaScript($value.get("S")).replaceAll("\\'","'")"
+                #set($sep = ",")
+                #elseif($value.containsKey("N"))
+                $sep"$name": $value.get("N")
+                #set($sep = ",")
+                #elseif($value.containsKey("BOOL"))
+                $sep"$name": $value.get("BOOL")
+                #set($sep = ",")
+                #end
+                #end
+                }
+                #else
+                #set($context.responseOverride.status = 404)
+                {"message": "No current reading is held for that identifier."}
+                #end
+          - StatusCode: '400'
+            SelectionPattern: '4\d{2}'
+            ResponseTemplates:
+              application/json: |
+                {"message": "The request was rejected."}
+          - StatusCode: '502'
+            SelectionPattern: '5\d{2}'
+            ResponseTemplates:
+              application/json: |
+                {"message": "The snapshot store did not answer."}
+      MethodResponses:
+        - StatusCode: '200'
+        - StatusCode: '400'
+        # Returned by the authorizer, before the integration runs.
+        - StatusCode: '401'
+        - StatusCode: '404'
+        - StatusCode: '502'
+
+  # The suffix on this logical id is a hash of the API definition above. Change it
+  # whenever a resource, method, integration or template changes: CloudFormation
+  # takes a fresh snapshot of the API only for a logical id it has not seen, and
+  # the stage keeps serving the previous snapshot otherwise.
+  ReadApiDeployment9c2ad4:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: GetRoomMethod
+    Properties:
+      RestApiId: !Ref ReadApi
+      Description: Deployment of the current read API definition.
+
+  ReadApiStage:
+    Type: AWS::ApiGateway::Stage
+    DependsOn: ApiGatewayAccount
+    Properties:
+      RestApiId: !Ref ReadApi
+      StageName: v1
+      DeploymentId: !Ref ReadApiDeployment9c2ad4
+      Description: The stage the client calls.
+      TracingEnabled: false
+      AccessLogSetting:
+        DestinationArn: !GetAtt ReadApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","extendedRequestId":"$context.extendedRequestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","responseLength":"$context.responseLength","user":"$context.authorizer.claims.sub"}'
+
+Outputs:
+  ReadApiInvokeUrl:
+    Description: Base URL the client calls; a room snapshot is at /rooms/{roomId}.
+    Value: !Sub 'https://${ReadApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${ReadApiStage}'
+  ReadApiId:
+    Description: Identifier of the read API.
+    Value: !Ref ReadApi
+  UserPoolId:
+    Description: User pool the client signs in against.
+    Value: !Ref ReadApiUserPool
+  UserPoolClientId:
+    Description: App client id the client passes to InitiateAuth.
+    Value: !Ref ReadApiUserPoolClient

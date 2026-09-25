@@ -1,0 +1,32 @@
+{
+  "Records": [
+    {
+      "eventVersion": "2.1",
+      "eventSource": "aws:s3",
+      "awsRegion": "eu-west-2",
+      "eventTime": "2025-06-25T10:05:38.123Z",
+      "eventName": "ObjectCreated:Put",
+      "userIdentity": {"principalId": "AWS:AIDAEXAMPLEPRINCIPAL"},
+      "requestParameters": {"sourceIPAddress": "198.51.100.24"},
+      "responseElements": {
+        "x-amz-request-id": "EXAMPLE123456789",
+        "x-amz-id-2": "EXAMPLEuLHY7nrQiBnsQlqRmL0aFVo9ExampleTrailingValue"
+      },
+      "s3": {
+        "s3SchemaVersion": "1.0",
+        "configurationId": "raw-object-created",
+        "bucket": {
+          "name": "obu-poc-raw",
+          "ownerIdentity": {"principalId": "A1EXAMPLEOWNER"},
+          "arn": "arn:aws:s3:::obu-poc-raw"
+        },
+        "object": {
+          "key": "raw/bms/environmental/2025/06/25/nhhb-env.csv",
+          "size": 62,
+          "eTag": "d41d8cd98f00b204e9800998ecf8427e",
+          "sequencer": "0062B7EXAMPLE1A2B"
+        }
+      }
+    }
+  ]
+}

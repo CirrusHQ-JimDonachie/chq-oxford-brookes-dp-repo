@@ -1,0 +1,297 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Building data platform: config-driven file ingestion into an Iceberg lake with
+  threshold alerting, an Athena and QuickSight read side, and a Cognito-protected
+  read API. Root stack; each concern is a nested child under nested/.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming
+        Parameters:
+          - ProjectSlug
+          - Environment
+      - Label:
+          default: Account prerequisites
+        Parameters:
+          - DeployRoleArn
+          - QuickSightServiceRoleArn
+          - QuickSightPrincipalArn
+          - DataProviderPrincipalArn
+      - Label:
+          default: Data platform
+        Parameters:
+          - CuratedNamespace
+          - RawRetentionDays
+          - ClaimTtlDays
+          - ApiEntityType
+      - Label:
+          default: Alerting and logging
+        Parameters:
+          - AlertEmail
+          - AlertEventSource
+          - DataQualityAlarmPeriodSeconds
+          - LogRetentionDays
+          - LogLevel
+    ParameterLabels:
+      ProjectSlug:
+        default: Project slug
+      Environment:
+        default: Environment
+      DeployRoleArn:
+        default: CloudFormation deploy role ARN
+      QuickSightServiceRoleArn:
+        default: QuickSight service role ARN
+      QuickSightPrincipalArn:
+        default: QuickSight user or group ARN
+      DataProviderPrincipalArn:
+        default: File-drop principal ARN (optional)
+      CuratedNamespace:
+        default: Curated table namespace
+      RawRetentionDays:
+        default: Raw and error object retention (days)
+      ClaimTtlDays:
+        default: Delivery claim retention (days)
+      ApiEntityType:
+        default: Entity type served by the read API
+      AlertEmail:
+        default: Alert e-mail address
+      AlertEventSource:
+        default: Alert event source name
+      DataQualityAlarmPeriodSeconds:
+        default: Data-quality alarm period (seconds)
+      LogRetentionDays:
+        default: Log retention (days)
+      LogLevel:
+        default: Function log level
+
+Parameters:
+  ProjectSlug:
+    Type: String
+    Description: Short lowercase name used to build every resource name.
+    AllowedPattern: '^[a-z0-9-]{3,20}$'
+    ConstraintDescription: 3 to 20 characters, lowercase letters, digits and hyphens.
+  Environment:
+    Type: String
+    Description: Environment this stack deploys; part of every resource name.
+    AllowedValues:
+      - dev
+      - test
+      - prod
+  DeployRoleArn:
+    Type: String
+    Description: >-
+      ARN of the IAM role CloudFormation assumes to deploy this stack. It is
+      named as a Lake Formation data lake administrator so the grants in the
+      engine and analytics stacks can be written.
+    AllowedPattern: '^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$'
+    ConstraintDescription: An IAM role ARN.
+  QuickSightServiceRoleArn:
+    Type: String
+    Description: >-
+      ARN of the IAM role QuickSight runs queries as (aws-quicksight-service-role-v0
+      unless the account uses a custom one). Granted SELECT in Lake Formation and
+      use of the data key for Athena results.
+    AllowedPattern: '^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$'
+    ConstraintDescription: An IAM role ARN.
+  QuickSightPrincipalArn:
+    Type: String
+    Description: >-
+      ARN of the QuickSight user or group that owns the Athena data source
+      (arn:aws:quicksight:REGION:ACCOUNT:user/NAMESPACE/NAME).
+    AllowedPattern: '^arn:aws[a-z-]*:quicksight:[a-z0-9-]+:[0-9]{12}:(user|group)/.+$'
+    ConstraintDescription: A QuickSight user or group ARN.
+  DataProviderPrincipalArn:
+    Type: String
+    Description: >-
+      Optional. ARN of the principal that drops files into the raw prefix from
+      another account. Leave empty when the uploader is in this account and is
+      granted through IAM.
+    Default: ''
+  CuratedNamespace:
+    Type: String
+    Description: Namespace (database) inside the curated table bucket that the mapping configs target.
+    Default: building_data
+    AllowedPattern: '^[a-z0-9_]{1,255}$'
+    ConstraintDescription: Lowercase letters, digits and underscores.
+  RawRetentionDays:
+    Type: Number
+    Description: Days a dropped file and its error output stay in the landing bucket before expiry.
+    Default: 30
+    MinValue: 1
+    MaxValue: 3650
+  ClaimTtlDays:
+    Type: Number
+    Description: Days the transform function keeps its record of a processed file version.
+    Default: 14
+    MinValue: 1
+    MaxValue: 365
+  ApiEntityType:
+    Type: String
+    Description: >-
+      Entity type whose current snapshot the read API serves; must match the
+      entity type in the mapping config of the source that feeds it.
+    Default: room
+    AllowedPattern: '^[a-z0-9_-]{1,64}$'
+    ConstraintDescription: Lowercase letters, digits, underscores and hyphens.
+  AlertEmail:
+    Type: String
+    Description: E-mail address subscribed to the alert topic. The recipient must confirm the subscription before alerts are delivered.
+    MinLength: 3
+  AlertEventSource:
+    Type: String
+    Description: >-
+      Source field the transform function stamps on every threshold event, and
+      the value the routing rule matches on. One parameter feeds both so they
+      cannot drift apart.
+    Default: building-data.transform
+    AllowedPattern: '^[a-zA-Z0-9._-]{1,256}$'
+    ConstraintDescription: Letters, digits, dots, underscores and hyphens.
+  DataQualityAlarmPeriodSeconds:
+    Type: Number
+    Description: Window over which rejected records are counted before the data-quality alarm fires.
+    Default: 3600
+    AllowedValues:
+      - 300
+      - 900
+      - 1800
+      - 3600
+      - 21600
+      - 86400
+  LogRetentionDays:
+    Type: Number
+    Description: Retention for the function and API access log groups.
+    Default: 30
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1096
+      - 1827
+      - 2192
+      - 2557
+      - 2922
+      - 3288
+      - 3653
+  LogLevel:
+    Type: String
+    Description: Log level for the transform function.
+    Default: INFO
+    AllowedValues:
+      - DEBUG
+      - INFO
+      - WARN
+      - ERROR
+
+Resources:
+  FoundationStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./nested/foundation.yaml
+      Parameters:
+        ProjectSlug: !Ref ProjectSlug
+        Environment: !Ref Environment
+        DeployRoleArn: !Ref DeployRoleArn
+        QuickSightServiceRoleArn: !Ref QuickSightServiceRoleArn
+
+  StorageStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./nested/storage.yaml
+      Parameters:
+        ProjectSlug: !Ref ProjectSlug
+        Environment: !Ref Environment
+        KmsKeyArn: !GetAtt FoundationStack.Outputs.KmsKeyArn
+        CuratedNamespace: !Ref CuratedNamespace
+        QuickSightServiceRoleArn: !Ref QuickSightServiceRoleArn
+
+  EngineStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./nested/engine.yaml
+      Parameters:
+        ProjectSlug: !Ref ProjectSlug
+        Environment: !Ref Environment
+        KmsKeyArn: !GetAtt FoundationStack.Outputs.KmsKeyArn
+        CuratedTableBucketName: !GetAtt StorageStack.Outputs.CuratedTableBucketName
+        CuratedNamespaceName: !GetAtt StorageStack.Outputs.CuratedNamespaceName
+        AlertEmail: !Ref AlertEmail
+        AlertEventSource: !Ref AlertEventSource
+        DataQualityAlarmPeriodSeconds: !Ref DataQualityAlarmPeriodSeconds
+        ClaimTtlDays: !Ref ClaimTtlDays
+        LogRetentionDays: !Ref LogRetentionDays
+        RawRetentionDays: !Ref RawRetentionDays
+        LogLevel: !Ref LogLevel
+        DataProviderPrincipalArn: !Ref DataProviderPrincipalArn
+
+  AnalyticsStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./nested/analytics.yaml
+      Parameters:
+        ProjectSlug: !Ref ProjectSlug
+        Environment: !Ref Environment
+        KmsKeyArn: !GetAtt FoundationStack.Outputs.KmsKeyArn
+        AthenaResultsBucketName: !GetAtt StorageStack.Outputs.AthenaResultsBucketName
+        CuratedTableBucketName: !GetAtt StorageStack.Outputs.CuratedTableBucketName
+        CuratedNamespaceName: !GetAtt StorageStack.Outputs.CuratedNamespaceName
+        QuickSightServiceRoleArn: !Ref QuickSightServiceRoleArn
+        QuickSightPrincipalArn: !Ref QuickSightPrincipalArn
+
+  ApiStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./nested/api.yaml
+      Parameters:
+        ProjectSlug: !Ref ProjectSlug
+        Environment: !Ref Environment
+        KmsKeyArn: !GetAtt FoundationStack.Outputs.KmsKeyArn
+        StateTableName: !GetAtt EngineStack.Outputs.StateTableName
+        StateTableArn: !GetAtt EngineStack.Outputs.StateTableArn
+        LogRetentionDays: !Ref LogRetentionDays
+        ApiEntityType: !Ref ApiEntityType
+
+Outputs:
+  RawLandingBucketName:
+    Description: Bucket the Customer drops source files into, under the raw/ prefix.
+    Value: !GetAtt EngineStack.Outputs.RawLandingBucketName
+  CuratedTableBucketName:
+    Description: Curated Iceberg table bucket the transform function writes to.
+    Value: !GetAtt StorageStack.Outputs.CuratedTableBucketName
+  TransformFunctionName:
+    Description: Name of the transform function, for log and metric lookups.
+    Value: !GetAtt EngineStack.Outputs.TransformFunctionName
+  AlertTopicArn:
+    Description: Topic carrying threshold alerts and alarm notifications.
+    Value: !GetAtt EngineStack.Outputs.AlertTopicArn
+  AthenaWorkGroupName:
+    Description: Athena workgroup that queries the curated lake.
+    Value: !GetAtt AnalyticsStack.Outputs.AthenaWorkGroupName
+  QuickSightDataSourceArn:
+    Description: QuickSight data source to build datasets and the Q topic on.
+    Value: !GetAtt AnalyticsStack.Outputs.QuickSightDataSourceArn
+  ReadApiInvokeUrl:
+    Description: Base URL of the read API; a snapshot is at /rooms/{roomId}.
+    Value: !GetAtt ApiStack.Outputs.ReadApiInvokeUrl
+  UserPoolId:
+    Description: Cognito user pool the read API client signs in against.
+    Value: !GetAtt ApiStack.Outputs.UserPoolId
+  UserPoolClientId:
+    Description: App client id the read API client passes to InitiateAuth.
+    Value: !GetAtt ApiStack.Outputs.UserPoolClientId
+  KmsKeyArn:
+    Description: Key every store in the platform encrypts under.
+    Value: !GetAtt FoundationStack.Outputs.KmsKeyArn

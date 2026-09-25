@@ -1,0 +1,47 @@
+[
+  {
+    "name": "CONFIG_TABLE_NAME",
+    "purpose": "Table holding the per-source mapping configs and the alert rules",
+    "required": true
+  },
+  {
+    "name": "STATE_TABLE_NAME",
+    "purpose": "Table holding the delivery claims, the current-state snapshots and the alert state",
+    "required": true
+  },
+  {
+    "name": "ALERT_EVENT_BUS_NAME",
+    "purpose": "Event bus the threshold status-change events are put on",
+    "required": true
+  },
+  {
+    "name": "ALERT_EVENT_SOURCE",
+    "purpose": "The Source field on every status-change event this engine puts on the bus; the EventBridge rule that routes them matches on it",
+    "required": true
+  },
+  {
+    "name": "ICEBERG_CATALOG_URI",
+    "purpose": "Glue Iceberg REST endpoint, https://glue.<region>.amazonaws.com/iceberg",
+    "required": true
+  },
+  {
+    "name": "ICEBERG_WAREHOUSE",
+    "purpose": "Catalog warehouse, <account id>:s3tablescatalog/<table bucket name>",
+    "required": true
+  },
+  {
+    "name": "ERROR_PREFIX",
+    "purpose": "Prefix in the landing bucket that rejected files and records are written under; must not be covered by the notification filter",
+    "required": true
+  },
+  {
+    "name": "METRICS_NAMESPACE",
+    "purpose": "CloudWatch namespace the rejected-record and files-processed metrics are published in",
+    "required": true
+  },
+  {
+    "name": "CLAIM_TTL_DAYS",
+    "purpose": "How many days a delivery claim is kept before the state table expires it; a whole number greater than zero",
+    "required": true
+  }
+]

@@ -1,0 +1,3 @@
+aws-lambda-powertools==3.35.0
+pyarrow==25.0.1
+pyiceberg[pyarrow,rest-sigv4]==0.12.0
