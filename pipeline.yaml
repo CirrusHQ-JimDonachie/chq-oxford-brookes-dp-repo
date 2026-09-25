@@ -478,6 +478,22 @@ Resources:
                       - states.amazonaws.com
                       - scheduler.amazonaws.com
                       - events.amazonaws.com
+              # CloudFormation re-passes the top-level stack's own execution
+              # role into every nested AWS::CloudFormation::Stack's internal
+              # create/update call - confirmed directly, the first pipeline
+              # run failed on exactly this, denied PassRole on its own ARN.
+              # A role always needs this on itself once it deploys nested
+              # stacks under a custom RoleArn.
+              - Sid: PassSelfForNestedStacks
+                Effect: Allow
+                Action: 'iam:PassRole'
+                # Built as a string, not !GetAtt IacExecRole.Arn - the role's
+                # name is fixed (RoleName above), so this needs no dependency
+                # on the resource's own attribute at all.
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectSlug}-${Environment}-iac-exec'
+                Condition:
+                  StringEquals:
+                    'iam:PassedToService': cloudformation.amazonaws.com
               - Sid: ManageLogGroups
                 Effect: Allow
                 Action:
