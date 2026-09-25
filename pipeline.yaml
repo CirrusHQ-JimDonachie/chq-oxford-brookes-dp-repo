@@ -441,10 +441,15 @@ Resources:
                   # The gotcha set DEPLOYMENT.md already documents: needed to
                   # create/update the encrypted event bus and every rule on it.
                   - 'kms:GenerateDataKeyWithoutPlaintext'
+                  - 'kms:GenerateDataKey'
                   - 'kms:Decrypt'
                   - 'kms:Encrypt'
                   - 'kms:ReEncryptFrom'
                   - 'kms:ReEncryptTo'
+                  # Lambda calls these internally to use the key for a KMS-
+                  # encrypted environment variable - confirmed directly, one
+                  # at a time, across three consecutive failed attempts.
+                  - 'kms:CreateGrant'
                 Resource: '*'
               - Sid: ManageLambdaFunction
                 Effect: Allow
