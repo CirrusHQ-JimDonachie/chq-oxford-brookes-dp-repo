@@ -28,13 +28,11 @@ phases:
       # CodePipeline's CloudFormation deploy action wants parameter overrides
       # as {"Parameters": {"Key": "Value", ...}}, not parameters.json's
       # [{"ParameterKey": ..., "ParameterValue": ...}, ...] array shape.
-      - >
-        python3 -c "
-        import json
-        params = json.load(open('parameters.json'))
-        out = {p['ParameterKey']: p['ParameterValue'] for p in params}
-        json.dump({'Parameters': out}, open('template-configuration.json', 'w'))
-        "
+      # One line, not a YAML folded block: a folded scalar (>) turns the
+      # newlines in a multi-line python -c script into spaces, which breaks
+      # Python's whitespace-sensitive syntax - confirmed directly, the first
+      # pipeline run failed here with exit status 1.
+      - "python3 -c \"import json; params = json.load(open('parameters.json')); out = {p['ParameterKey']: p['ParameterValue'] for p in params}; json.dump({'Parameters': out}, open('template-configuration.json', 'w'))\""
 
 artifacts:
   files:
