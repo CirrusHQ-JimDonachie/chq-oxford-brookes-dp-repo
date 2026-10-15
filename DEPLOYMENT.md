@@ -4,6 +4,35 @@ One stack, `main.yaml`, with five nested children. Everything is in eu-west-2.
 The Customer's own pipeline deploys it; these notes cover what that pipeline has
 to do and what has to be true of the account before the first deployment.
 
+## Bootstrapping the pipeline itself (one-time, out of band)
+
+`pipeline.yaml` is a separate stack from `main.yaml` - it has to exist before
+`main.yaml` can be deployed through it, so it's deployed once, manually
+(`aws cloudformation deploy --template-file pipeline.yaml ...`), the same way
+the ECR repository and the SAM/CFN artifact bucket are (see "What the deploy
+role needs" below - those two still have to exist first).
+
+The source is **CodeCommit, not GitHub**: the Customer has no GitHub repo
+available, so `pipeline.yaml` creates a CodeCommit repository as a normal
+stack-managed resource (`CodeRepository`) rather than pointing at something
+external. That removes the GitHub-App-authorisation step an external source
+would need, but adds one of its own:
+
+1. Deploy `pipeline.yaml`. Its outputs include `RepositoryCloneUrlHttp` and
+   `RepositoryCloneUrlSsh` for the new, empty repository.
+2. Set up CodeCommit Git credentials for whoever is pushing (IAM console:
+   Security credentials -> HTTPS Git credentials for CodeCommit; or use
+   `git-remote-codecommit`, which authenticates with ordinary AWS credentials
+   instead of a separate Git-specific username/password).
+3. Push this project to it once:
+   ```bash
+   git remote add codecommit <RepositoryCloneUrlHttp from the stack output>
+   git push codecommit main
+   ```
+4. The pipeline picks the push up on its next poll (see the Source stage's
+   `PollForSourceChanges` note in `pipeline.yaml` - roughly a minute, not
+   instant) and runs `main.yaml` through for the first time.
+
 ## What the pipeline has to do
 
 **Package before deploying, with SAM CLI, not plain `aws cloudformation
