@@ -532,10 +532,20 @@ Resources:
                   - 'logs:CreateLogGroup'
                   - 'logs:DeleteLogGroup'
                   - 'logs:PutRetentionPolicy'
-                  - 'logs:DescribeLogGroups'
                   - 'logs:TagResource'
                   - 'logs:AssociateKmsKey'
                 Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*/${ProjectSlug}-${Environment}-*'
+              # Confirmed directly against the Customer account:
+              # AWS::Logs::LogGroup's Arn GetAtt attribute (used by, e.g.,
+              # TransformFunctionRole's inline policy) resolves via a live
+              # logs:DescribeLogGroups call, not a deterministic string build
+              # - and DescribeLogGroups doesn't honour the resource-level
+              # prefix scoping the other logs actions above do, so it needs
+              # its own statement with Resource: '*'.
+              - Sid: DescribeLogGroupsForGetAtt
+                Effect: Allow
+                Action: 'logs:DescribeLogGroups'
+                Resource: '*'
               - Sid: ManageQueuesAndTopics
                 Effect: Allow
                 Action:
@@ -604,6 +614,11 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog/*'
                   - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/*'
                   - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/*'
+                  # Confirmed directly: glue:DeleteDatabase checks permission
+                  # against this resource type too (a cascade-delete check
+                  # for any user-defined functions in the database), even
+                  # when the database has none.
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:userDefinedFunction/*'
               # Confirmed directly against the Customer account: CreateCatalog
               # for the federated s3tablescatalog also hands Glue's own
               # aws:s3tables connection to the new catalog, which needs its
@@ -626,6 +641,13 @@ Resources:
                   - 'lakeformation:ListPermissions'
                   - 'lakeformation:PutDataLakeSettings'
                   - 'lakeformation:GetDataLakeSettings'
+                  # Confirmed directly: granting AWS::LakeFormation::
+                  # PrincipalPermissions against a resource in the federated
+                  # s3tablescatalog validates by fetching credentials from the
+                  # federation source, which needs its own GetDataAccess
+                  # grant - GrantPermissions alone isn't enough for a
+                  # federated-catalog target, only for a native Glue one.
+                  - 'lakeformation:GetDataAccess'
                 Resource: '*'
               - Sid: ManageQuickSightDataSource
                 Effect: Allow
@@ -637,6 +659,12 @@ Resources:
                   - 'quicksight:DescribeDataSourcePermissions'
                   - 'quicksight:UpdateDataSourcePermissions'
                   - 'quicksight:PassDataSource'
+                  # Confirmed directly: CloudFormation's own post-create
+                  # stabilization check calls ListTagsForResource even when
+                  # the resource has no Tags property set - CreateDataSource
+                  # itself succeeds, but this follow-up call being denied
+                  # still fails the whole resource and triggers a rollback.
+                  - 'quicksight:ListTagsForResource'
                 Resource: !Sub 'arn:${AWS::Partition}:quicksight:${AWS::Region}:${AWS::AccountId}:datasource/${ProjectSlug}-${Environment}-*'
               - Sid: ManageStepFunctionsAndScheduler
                 Effect: Allow
