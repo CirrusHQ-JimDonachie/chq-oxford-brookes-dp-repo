@@ -224,6 +224,58 @@ FoundationStack            key, Lake Formation settings, catalog
   |     |-- AnalyticsStack Athena workgroup, QuickSight data source
 ```
 
+## Do the first create by hand, with rollback disabled
+
+Confirmed directly against the Customer account (2026-10-16): letting the
+pipeline perform the very first create of `main.yaml` is a slow way to find
+problems. Every failure rolls the whole stack back, and a rollback here is not
+clean:
+
+- **The `s3tablescatalog` Glue catalog is left behind** and blocks the next
+  create ("Catalog already exists"). Deleting it needs a Lake Formation admin
+  with an explicit `DROP` grant on the catalog; the rollback also resets the
+  admin list to empty.
+- **The curated table bucket name stays locked** for several minutes after
+  deletion ("transitional state because of a previous deletion attempt") -
+  three minutes was not always enough; ten was.
+- **Deletion protection blocks the rollback itself** on `ConfigTable`,
+  `StateTable` and `ReadApiUserPool`, leaving the stack in `ROLLBACK_FAILED`.
+- **The Athena results bucket can be non-empty** (QuickSight's connection
+  check writes test-query results into it) and has versioning suspended, so
+  it needs a version-aware delete, not `aws s3 rm`.
+
+Instead, pause the pipeline's Deploy stage, take `packaged.yaml` and
+`template-configuration.json` from the last Build output artifact, and create
+the stack once by hand with rollback disabled, using the same execution role
+the pipeline uses:
+
+```bash
+aws codepipeline disable-stage-transition --pipeline-name <project>-<environment>-pipeline \
+  --stage-name Deploy --transition-type Inbound --reason "first create"
+aws cloudformation create-stack \
+  --stack-name <project>-<environment> \
+  --template-body file://packaged.yaml \
+  --parameters file://params.json \
+  --role-arn <IacExecRoleArn> \
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+  --disable-rollback
+aws codepipeline enable-stage-transition --pipeline-name <project>-<environment>-pipeline \
+  --stage-name Deploy --transition-type Inbound
+```
+
+(`params.json` is `template-configuration.json`'s `Parameters` map converted
+to the `[{"ParameterKey": ..., "ParameterValue": ...}]` shape.) A failure then
+leaves everything already created in place: fix the gap and `update-stack`
+rather than starting over. Every later change goes through the pipeline as a
+normal update.
+
+Before that first create, also have in place: the ECR repository policy (see
+above), QuickSight subscribed with Athena access enabled under Manage account
+-> Permissions -> AWS resources (this is what creates and registers
+`aws-quicksight-service-role-v0`; creating the IAM role by hand is not
+enough), and `FlatRefreshRole`'s Lake Formation admin entry left out of
+`foundation.yaml` until the first create has made the role.
+
 ## Things to watch on the first deployment and the first file drop
 
 Each of these is correct as far as the AWS documentation goes, and each fails in
