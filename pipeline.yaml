@@ -586,6 +586,17 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog/*'
                   - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/*'
                   - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/*'
+              # Confirmed directly against the Customer account: CreateCatalog
+              # for the federated s3tablescatalog also hands Glue's own
+              # aws:s3tables connection to the new catalog, which needs its
+              # own PassConnection grant - glue:CreateCatalog alone isn't
+              # enough, the same kind of forward IAM gap iam:PassRole and the
+              # Serverless transform ARN turned out to be during the sandbox
+              # build.
+              - Sid: PassS3TablesConnection
+                Effect: Allow
+                Action: 'glue:PassConnection'
+                Resource: !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:connection/aws:s3tables'
               - Sid: ManageLakeFormation
                 Effect: Allow
                 Action:
