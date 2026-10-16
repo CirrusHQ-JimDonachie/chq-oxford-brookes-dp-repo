@@ -492,6 +492,13 @@ Resources:
                       - states.amazonaws.com
                       - scheduler.amazonaws.com
                       - events.amazonaws.com
+                      # Confirmed directly against the Customer account:
+                      # foundation.yaml's TableBucketsRegistration
+                      # (AWS::LakeFormation::Resource) hands
+                      # LakeFormationVendingRole to Lake Formation itself at
+                      # registration time - missing here, the same forward
+                      # PassRole gap as the other services already listed.
+                      - lakeformation.amazonaws.com
               # CloudFormation re-passes the top-level stack's own execution
               # role into every nested AWS::CloudFormation::Stack's internal
               # create/update call - confirmed directly, the first pipeline
