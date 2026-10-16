@@ -8,9 +8,9 @@ Description: >-
   tracked branch.
   Source is CodeCommit, not GitHub - the Customer has no GitHub repo
   available, so this uses a repository native to their own AWS account
-  instead. That also means no CodeConnections/GitHub App authorisation step:
-  CodeCommit needs no out-of-band human action to wire up as a source, unlike
-  the GitHub-based version this replaces.
+  instead. The repository itself is created out of band, not by this stack
+  (same reason the ECR repository and the SAM artifact bucket are) - the
+  Customer's account already has one provisioned for this project.
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -63,10 +63,10 @@ Parameters:
   RepoName:
     Type: String
     Description: >-
-      Name to give the CodeCommit repository this stack creates. Starts
-      empty - push the unified project to it once, out of band, after this
-      stack exists (git push over HTTPS/SSH using CodeCommit's own Git
-      credentials, or git-remote-codecommit - see DEPLOYMENT.md).
+      Name of the existing CodeCommit repository to build from. Not
+      stack-managed (same reason the ECR repository below isn't) - create it
+      once, out of band, before the first pipeline run, and push the unified
+      project to it (see DEPLOYMENT.md).
     AllowedPattern: '^[\w.-]{1,100}$'
     ConstraintDescription: 1 to 100 characters - letters, numbers, periods, underscores and hyphens.
   RepoBranch:
@@ -96,18 +96,6 @@ Parameters:
     AllowedPattern: '^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/.+$'
 
 Resources:
-  # ---------- Source ----------
-  # Unlike the GitHub repo this replaces, CodeCommit is native to the account,
-  # so it is stack-managed rather than created out of band - nothing to
-  # authorise, no GitHub App install. It starts empty; push the unified
-  # project to it once after this stack exists (DEPLOYMENT.md has the exact
-  # steps).
-  CodeRepository:
-    Type: AWS::CodeCommit::Repository
-    Properties:
-      RepositoryName: !Ref RepoName
-      RepositoryDescription: !Sub 'Unified CloudFormation project and Lambda source for ${ProjectSlug}-${Environment}.'
-
   # ---------- Artifacts ----------
   PipelineArtifactsBucket:
     Type: AWS::S3::Bucket
@@ -227,7 +215,7 @@ Resources:
                   - 'codecommit:UploadArchive'
                   - 'codecommit:GetUploadArchiveStatus'
                   - 'codecommit:CancelUploadArchive'
-                Resource: !GetAtt CodeRepository.Arn
+                Resource: !Sub 'arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${RepoName}'
               - Sid: RunTheBuild
                 Effect: Allow
                 Action:
@@ -722,7 +710,7 @@ Resources:
                 Provider: CodeCommit
                 Version: '1'
               Configuration:
-                RepositoryName: !GetAtt CodeRepository.Name
+                RepositoryName: !Ref RepoName
                 BranchName: !Ref RepoBranch
                 # Polling, not an EventBridge rule: the console wizard wires
                 # up a rule + role for push-triggered starts automatically,
@@ -768,15 +756,6 @@ Resources:
               RunOrder: 1
 
 Outputs:
-  RepositoryCloneUrlHttp:
-    Description: >-
-      HTTPS clone URL for the CodeCommit repository. Needs CodeCommit Git
-      credentials (console: IAM user/role -> Security credentials) or
-      git-remote-codecommit for the initial push.
-    Value: !GetAtt CodeRepository.CloneUrlHttp
-  RepositoryCloneUrlSsh:
-    Description: SSH clone URL for the CodeCommit repository, if SSH keys are set up for CodeCommit instead.
-    Value: !GetAtt CodeRepository.CloneUrlSsh
   PipelineName:
     Description: Name of the CodePipeline pipeline.
     Value: !Ref Pipeline

@@ -13,20 +13,26 @@ the ECR repository and the SAM/CFN artifact bucket are (see "What the deploy
 role needs" below - those two still have to exist first).
 
 The source is **CodeCommit, not GitHub**: the Customer has no GitHub repo
-available, so `pipeline.yaml` creates a CodeCommit repository as a normal
-stack-managed resource (`CodeRepository`) rather than pointing at something
-external. That removes the GitHub-App-authorisation step an external source
-would need, but adds one of its own:
+available. Unlike the GitHub/CodeConnections version this replaced,
+`pipeline.yaml` does not create the CodeCommit repository itself - the
+Customer's account already has one provisioned for this project
+(`obu-data-test`, empty at the time of writing), so it's treated the same
+way as the ECR repository and the SAM/CFN artifact bucket: an existing,
+out-of-band resource that `RepoName` just points at. That removes the
+GitHub-App-authorisation step an external source would need, but adds a
+seeding step of its own:
 
-1. Deploy `pipeline.yaml`. Its outputs include `RepositoryCloneUrlHttp` and
-   `RepositoryCloneUrlSsh` for the new, empty repository.
+1. Deploy `pipeline.yaml` with `RepoName` set to the existing repository's
+   name (`obu-data-test`).
 2. Set up CodeCommit Git credentials for whoever is pushing (IAM console:
    Security credentials -> HTTPS Git credentials for CodeCommit; or use
    `git-remote-codecommit`, which authenticates with ordinary AWS credentials
    instead of a separate Git-specific username/password).
-3. Push this project to it once:
+3. Push this project to it once (clone URLs come from
+   `aws codecommit get-repository --repository-name obu-data-test`, or the
+   console):
    ```bash
-   git remote add codecommit <RepositoryCloneUrlHttp from the stack output>
+   git remote add codecommit <clone URL for obu-data-test>
    git push codecommit main
    ```
 4. The pipeline picks the push up on its next poll (see the Source stage's
