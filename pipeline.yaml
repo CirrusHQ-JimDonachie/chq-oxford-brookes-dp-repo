@@ -409,6 +409,13 @@ Resources:
                   - 's3tables:ListNamespaces'
                   - 's3tables:ListTableBuckets'
                   - 's3tables:PutTableBucketPolicy'
+                  # Confirmed directly against the Customer account:
+                  # CuratedTableBucket's EncryptionConfiguration property
+                  # (storage.yaml) needs its own grant - s3tables:CreateTableBucket
+                  # isn't enough on its own, the resource provider calls
+                  # PutTableBucketEncryption as a separate step after create.
+                  - 's3tables:PutTableBucketEncryption'
+                  - 's3tables:GetTableBucketEncryption'
                   - 's3tables:TagResource'
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${ProjectSlug}-${Environment}-*'
