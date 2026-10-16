@@ -416,6 +416,10 @@ Resources:
                   # PutTableBucketEncryption as a separate step after create.
                   - 's3tables:PutTableBucketEncryption'
                   - 's3tables:GetTableBucketEncryption'
+                  # Same shape again: UnreferencedFileRemoval is a third
+                  # separate provider call, after Create and PutEncryption.
+                  - 's3tables:PutTableBucketMaintenanceConfiguration'
+                  - 's3tables:GetTableBucketMaintenanceConfiguration'
                   - 's3tables:TagResource'
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${ProjectSlug}-${Environment}-*'
