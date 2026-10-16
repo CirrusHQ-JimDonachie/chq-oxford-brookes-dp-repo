@@ -13,7 +13,7 @@
   },
   {
     "ParameterKey": "QuickSightServiceRoleArn",
-    "ParameterValue": "arn:aws:iam::421454275355:role/service-role/aws-quicksight-service-role-v0"
+    "ParameterValue": "arn:aws:iam::552969575108:role/building-data-dev-iac-exec"
   },
   {
     "ParameterKey": "QuickSightPrincipalArn",

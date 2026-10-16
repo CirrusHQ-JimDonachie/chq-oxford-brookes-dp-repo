@@ -234,7 +234,13 @@ Resources:
       # rejects a role that doesn't exist yet ("Invalid principal") — on a
       # from-scratch deployment this entry has to be added on a SECOND
       # deploy, once the first has created FlatRefreshRole (analytics.yaml).
-        - DataLakePrincipalIdentifier: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectSlug}-${Environment}-flat-refresh'
+      # TEMPORARILY COMMENTED OUT for the Customer account's first-ever
+      # deploy (2026-10-16) - confirmed directly, this is the exact failure
+      # the comment above anticipates: "Invalid principal,
+      # arn:...role/building-data-dev-flat-refresh". Re-add this line once
+      # FlatRefreshRole exists (i.e. after the first successful deploy) and
+      # redeploy.
+      # - DataLakePrincipalIdentifier: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectSlug}-${Environment}-flat-refresh'
       MutationType: REPLACE
       Parameters:
         CROSS_ACCOUNT_VERSION: '4'
