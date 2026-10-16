@@ -477,6 +477,14 @@ Resources:
                   - 'lambda:RemovePermission'
                   - 'lambda:TagResource'
                   - 'lambda:ListVersionsByFunction'
+                  # Confirmed directly: TransformFunctionEventInvokeConfig
+                  # (AWS::Lambda::EventInvokeConfig, engine.yaml) needs its
+                  # own grant - the function-management actions above don't
+                  # cover the function's async-invoke settings.
+                  - 'lambda:PutFunctionEventInvokeConfig'
+                  - 'lambda:UpdateFunctionEventInvokeConfig'
+                  - 'lambda:DeleteFunctionEventInvokeConfig'
+                  - 'lambda:GetFunctionEventInvokeConfig'
                 Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectSlug}-${Environment}-*'
               - Sid: ManageAppRoles
                 Effect: Allow
