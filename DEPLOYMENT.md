@@ -88,6 +88,34 @@ aws ecr create-repository \
   --encryption-configuration encryptionType=KMS
 ```
 
+**The repository also needs its own resource policy letting Lambda pull
+from it.** Confirmed directly against the Customer account: when SAM/CFN
+manages the ECR repository itself, it sets this automatically; an
+out-of-band repository (the case here) does not have it, and
+`TransformFunction`'s first create fails with "Lambda does not have
+permission to access the ECR image" - a CFN rollback, not a template bug.
+Set it once, out of band, alongside creating the repository:
+
+```bash
+aws ecr set-repository-policy \
+  --repository-name <project>-<environment>-transform \
+  --region eu-west-2 \
+  --policy-text '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Sid": "LambdaECRImageRetrievalPolicy",
+      "Effect": "Allow",
+      "Principal": {"Service": "lambda.amazonaws.com"},
+      "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
+      "Condition": {
+        "StringLike": {
+          "aws:sourceArn": "arn:aws:lambda:eu-west-2:<account-id>:function:<project>-<environment>-transform"
+        }
+      }
+    }]
+  }'
+```
+
 **Why container image, not zip.** It wasn't the first approach. A zip package
 built with `pip install --target lambda/fn-transform/app/ --platform
 manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --python-version 3.14
