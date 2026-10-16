@@ -499,6 +499,21 @@ Resources:
                   - 'iam:UpdateAssumeRolePolicy'
                   - 'iam:TagRole'
                 Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*'
+              # Confirmed directly: api.yaml's ApiGatewayLogsRole uses
+              # ManagedPolicyArns, which CloudFormation applies (and removes
+              # on delete) via Attach/DetachRolePolicy. Scoped to the one
+              # managed policy the templates attach, so this can't be used
+              # to hand an app role anything broader.
+              - Sid: AttachApiGatewayLogsPolicy
+                Effect: Allow
+                Action:
+                  - 'iam:AttachRolePolicy'
+                  - 'iam:DetachRolePolicy'
+                  - 'iam:ListAttachedRolePolicies'
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*'
+                Condition:
+                  ArnEqualsIfExists:
+                    'iam:PolicyARN': !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs'
               - Sid: PassAppRoles
                 Effect: Allow
                 Action: 'iam:PassRole'
@@ -711,6 +726,11 @@ Resources:
                   - 'cognito-idp:DeleteUserPoolClient'
                   - 'cognito-idp:CreateGroup'
                   - 'cognito-idp:DeleteGroup'
+                  # Confirmed directly: ReadApiReadersGroup's create calls
+                  # GetGroup to stabilise, same post-create read pattern as
+                  # QuickSight's ListTagsForResource.
+                  - 'cognito-idp:GetGroup'
+                  - 'cognito-idp:UpdateGroup'
                   - 'cognito-idp:TagResource'
                 Resource: !Sub 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*'
               - Sid: ManageCloudWatchAlarms
