@@ -2,7 +2,7 @@
   "_rebuild_hints": {
     "lines": [
       {
-        "source": "repo-connection",
+        "source": "repo-codecommit",
         "target": "pipeline"
       },
       {
@@ -79,7 +79,7 @@
       },
       {
         "source": "source-repo",
-        "target": "repo-connection"
+        "target": "repo-codecommit"
       }
     ],
     "parents": {
@@ -99,7 +99,7 @@
       "pipeline-artifacts": "region",
       "quicksight": "region",
       "read-api": "region",
-      "repo-connection": "region"
+      "repo-codecommit": "region"
     },
     "shape_order": [
       "region",
@@ -113,7 +113,7 @@
       "ddb-config",
       "alert-topic",
       "read-api",
-      "repo-connection",
+      "repo-codecommit",
       "pipeline",
       "build-project",
       "pipeline-artifacts",
@@ -138,7 +138,7 @@
                 "x": 0.5,
                 "y": 1
               },
-              "shapeId": "repo-connection",
+              "shapeId": "repo-codecommit",
               "style": "none",
               "type": "shapeEndpoint"
             },
@@ -660,7 +660,7 @@
                 "x": 0.5,
                 "y": 0
               },
-              "shapeId": "repo-connection",
+              "shapeId": "repo-codecommit",
               "style": "arrow",
               "type": "shapeEndpoint"
             },
@@ -683,7 +683,7 @@
             },
             "className": "RegionAWS2024",
             "id": "region",
-            "text": "oxford-brookes-building-data-poc \u2014 dev (eu-west-2)",
+            "text": "oxford-brookes-building-data-poc — dev (eu-west-2)",
             "type": "namedContainer"
           },
           {
@@ -813,9 +813,9 @@
               "x": 2780,
               "y": 530
             },
-            "className": "ArchAWSCodeStarAWS2024",
-            "id": "repo-connection",
-            "text": "CodeConnections\nconnection",
+            "className": "ArchAWSCodeCommitAWS2024",
+            "id": "repo-codecommit",
+            "text": "CodeCommit\n(obu-data-test)",
             "type": "namedShape"
           },
           {
@@ -945,9 +945,9 @@
               "x": 2780,
               "y": 60
             },
-            "className": "ResClient48LightAWS2024",
+            "className": "ResUsers48LightAWS2024",
             "id": "source-repo",
-            "text": "Customer source\nrepository (IaC)",
+            "text": "Engineers pushing\nthe IaC",
             "type": "namedShape"
           }
         ],
