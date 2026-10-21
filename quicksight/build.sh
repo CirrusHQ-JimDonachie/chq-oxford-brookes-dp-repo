@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the QuickSight content that sits on top of AnalyticsStack's Athena data source:
 # the RLS rules dataset, the SPICE dataset over the curated table (with RLS attached and
-# an hourly refresh schedule), and the two dashboards. Not CloudFormation-managed - run once per account after the stack
+# an hourly refresh schedule), the two dashboards, and the Q Topic. Not CloudFormation-managed - run once per account after the stack
 # is deployed and SPICE capacity exists. Safe to re-run: each resource is created, or
 # updated if it already exists.
 #
@@ -133,3 +133,47 @@ upsert_dashboard() {
 }
 upsert_dashboard "${PREFIX}-environmental-overview" "Building Environmental Overview" "$TMP/overview.json"
 upsert_dashboard "${PREFIX}-room-status" "Room Environmental Status" "$TMP/status.json"
+
+# --- Q Topic (natural-language model) -------------------------------------------------
+# The SoW's one Q Topic. This models the one source onboarded so far; it is remodelled
+# (semantic types, sample questions) against real sources and the Customer's question set.
+TOPIC_ID="${PREFIX}-building-environmental"
+measure() {  # measure <column> <friendly name> <description> <synonyms json>
+  echo "{\"ColumnName\":\"$1\",\"ColumnFriendlyName\":\"$2\",\"ColumnDescription\":\"$3\",\"ColumnSynonyms\":$4,
+   \"ColumnDataRole\":\"MEASURE\",\"Aggregation\":\"AVERAGE\",\"NotAllowedAggregations\":[\"SUM\"],\"NonAdditive\":true,\"IsIncludedInTopic\":true}"
+}
+cat > "$TMP/topic.json" <<EOF
+{"Name":"Building Environmental","Description":"Room temperature and humidity readings from the building management system.",
+ "UserExperienceVersion":"NEW_READER_EXPERIENCE",
+ "DataSets":[{"DatasetArn":"$DATA_ARN","DatasetName":"BMS environmental readings",
+  "DatasetDescription":"One row per sensor reading: room, time, temperature and humidity.",
+  "DataAggregation":{"DatasetRowDateGranularity":"HOUR","DefaultDateColumnName":"reading_at"},
+  "Columns":[
+   {"ColumnName":"room_id","ColumnFriendlyName":"Room","ColumnDescription":"Room identifier, e.g. NHHB-2.14 (building, floor, room).",
+    "ColumnSynonyms":["room","space","location","room id","area"],"ColumnDataRole":"DIMENSION","IsIncludedInTopic":true},
+   {"ColumnName":"reading_at","ColumnFriendlyName":"Reading time","ColumnDescription":"When the sensor took the reading (UTC).",
+    "ColumnSynonyms":["time","date","when","timestamp","reading date"],"ColumnDataRole":"DIMENSION","TimeGranularity":"HOUR","IsIncludedInTopic":true},
+   $(measure temperature_c "Temperature (°C)" "Room air temperature in degrees Celsius." '["temperature","temp","how hot","how warm","how cold","degrees"]'),
+   $(measure humidity_pct "Humidity (%)" "Relative humidity, percent." '["humidity","relative humidity","RH","damp","moisture"]'),
+   {"ColumnName":"source_file","IsIncludedInTopic":false},
+   {"ColumnName":"ingested_at","IsIncludedInTopic":false}]}]}
+EOF
+if qs describe-topic --topic-id "$TOPIC_ID" >/dev/null 2>&1; then
+  echo "updating topic $TOPIC_ID"
+  qs update-topic --topic-id "$TOPIC_ID" --topic "file://$TMP/topic.json" --query Status --output text
+else
+  echo "creating topic $TOPIC_ID"
+  qs create-topic --topic-id "$TOPIC_ID" --topic "file://$TMP/topic.json" --query Status --output text
+fi
+# QuickSight accepts only two exact action sets on a Topic: viewer (DescribeTopic) or this owner set.
+qs update-topic-permissions --topic-id "$TOPIC_ID" --grant-permissions "[{\"Principal\":\"$OWNER\",\"Actions\":[
+  \"quicksight:DescribeTopic\",\"quicksight:DescribeTopicRefresh\",\"quicksight:ListTopicRefreshSchedules\",
+  \"quicksight:DescribeTopicRefreshSchedule\",\"quicksight:DeleteTopic\",\"quicksight:UpdateTopic\",
+  \"quicksight:CreateTopicRefreshSchedule\",\"quicksight:DeleteTopicRefreshSchedule\",\"quicksight:UpdateTopicRefreshSchedule\",
+  \"quicksight:DescribeTopicPermissions\",\"quicksight:UpdateTopicPermissions\"]}]" \
+  --query Status --output text
+# Re-index the Topic whenever SPICE refreshes, rather than on a separate clock.
+if [ "$(qs list-topic-refresh-schedules --topic-id "$TOPIC_ID" --query 'length(RefreshSchedules)' --output text 2>/dev/null)" = "0" ]; then
+  qs create-topic-refresh-schedule --topic-id "$TOPIC_ID" --dataset-arn "$DATA_ARN" \
+    --refresh-schedule '{"IsEnabled":true,"BasedOnSpiceSchedule":true}' --query Status --output text
+fi
