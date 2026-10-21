@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the QuickSight content that sits on top of AnalyticsStack's Athena data source:
-# the RLS rules dataset, the SPICE dataset over the flat table (with RLS attached), and
-# the two dashboards. Not CloudFormation-managed - run once per account after the stack
+# the RLS rules dataset, the SPICE dataset over the curated table (with RLS attached and
+# an hourly refresh schedule), and the two dashboards. Not CloudFormation-managed - run once per account after the stack
 # is deployed and SPICE capacity exists. Safe to re-run: each resource is created, or
 # updated if it already exists.
 #
@@ -13,7 +13,8 @@ ACCOUNT_ID=${ACCOUNT_ID:?set ACCOUNT_ID}
 QS_USER=${QS_USER:?set QS_USER (QuickSight user name that will own the content)}
 REGION=${REGION:-eu-west-2}
 PREFIX=${PREFIX:-building-data-dev}
-VIEWS_DB=${VIEWS_DB:-building_data_views}
+CURATED_BUCKET=${CURATED_BUCKET:-${PREFIX}-curated}
+CURATED_NS=${CURATED_NS:-building_data}
 
 DS_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:datasource/${PREFIX}-athena"
 OWNER="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:user/default/${QS_USER}"
@@ -58,11 +59,12 @@ EOF
 upsert_dataset "$RLS_ID" --name "Building Data RLS rules" --import-mode SPICE \
   --physical-table-map "file://$TMP/rls-table.json"
 
-# --- Main dataset over the flat table ------------------------------------------------
-# The ID is fixed: AnalyticsStack's flat-refresh state machine refreshes it by this name.
+# --- Main dataset, straight over the curated Iceberg table ----------------------------
+# Reads the S3 Tables federated catalog directly (confirmed working 2026-10-21; this
+# replaced an intermediate flat-table copy). Refreshed by the schedule below.
 cat > "$TMP/data-table.json" <<EOF
-{"flat":{"RelationalTable":{"DataSourceArn":"$DS_ARN","Catalog":"AwsDataCatalog","Schema":"$VIEWS_DB",
- "Name":"bms_environmental_flat","InputColumns":[
+{"curated":{"RelationalTable":{"DataSourceArn":"$DS_ARN","Catalog":"s3tablescatalog/$CURATED_BUCKET","Schema":"$CURATED_NS",
+ "Name":"bms_environmental","InputColumns":[
   {"Name":"room_id","Type":"STRING"},{"Name":"reading_at","Type":"DATETIME"},
   {"Name":"temperature_c","Type":"DECIMAL"},{"Name":"humidity_pct","Type":"DECIMAL"},
   {"Name":"source_file","Type":"STRING"},{"Name":"ingested_at","Type":"DATETIME"}]}}}
@@ -73,6 +75,16 @@ EOF
 upsert_dataset "$DATA_ID" --name "BMS environmental readings" --import-mode SPICE \
   --physical-table-map "file://$TMP/data-table.json" \
   --row-level-permission-data-set "file://$TMP/rls.json"
+
+# Hourly SPICE refresh, run by QuickSight itself.
+cat > "$TMP/schedule.json" <<EOF
+{"ScheduleId":"hourly","ScheduleFrequency":{"Interval":"HOURLY"},"RefreshType":"FULL_REFRESH"}
+EOF
+if qs describe-refresh-schedule --data-set-id "$DATA_ID" --schedule-id hourly >/dev/null 2>&1; then
+  qs update-refresh-schedule --data-set-id "$DATA_ID" --schedule "file://$TMP/schedule.json" --query Status --output text
+else
+  qs create-refresh-schedule --data-set-id "$DATA_ID" --schedule "file://$TMP/schedule.json" --query Status --output text
+fi
 
 # --- Dashboards ----------------------------------------------------------------------
 DATA_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${DATA_ID}"

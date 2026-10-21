@@ -223,10 +223,10 @@ Resources:
     Properties:
       Admins:
         - DataLakePrincipalIdentifier: !Ref DeployRoleArn
-      # The deploy role is the only admin. Readers of the curated tables
-      # (FlatRefreshRole, QuickSight) get ordinary grants in analytics.yaml -
-      # confirmed against the Customer account that a non-admin role with
-      # those grants can query s3tablescatalog via Athena.
+      # The deploy role is the only admin. QuickSight reads the curated tables
+      # on ordinary grants (analytics.yaml) - confirmed against the Customer
+      # account that a non-admin role with those grants can query
+      # s3tablescatalog via Athena.
       MutationType: REPLACE
       Parameters:
         CROSS_ACCOUNT_VERSION: '4'

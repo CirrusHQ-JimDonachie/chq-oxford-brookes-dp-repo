@@ -67,11 +67,9 @@ sam deploy \
   --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND
 ```
 
-`CAPABILITY_IAM` covers every role the stacks create except one.
-`CAPABILITY_NAMED_IAM` is for that one: `analytics.yaml`'s `FlatRefreshRole`
-has a fixed name. (It was named so `foundation.yaml` could make it a Lake
-Formation admin by ARN; that admin entry has since been removed, but renaming
-the role would replace it, so the name stays.) `CAPABILITY_AUTO_EXPAND` covers the SAM
+`CAPABILITY_IAM` covers every role the stacks create. `CAPABILITY_NAMED_IAM`
+is no longer strictly needed (the one fixed-name role, the old flat-refresh
+role, has been removed) but is harmless to keep passing. `CAPABILITY_AUTO_EXPAND` covers the SAM
 transform on the transform function — a template-level expansion CloudFormation
 does server-side, unrelated to and not a substitute for the image build above.
 
@@ -486,8 +484,8 @@ reset to `OK` (with a recovery notification, if configured).
 The querying principal needs Lake Formation grants on the curated tables
 (`DESCRIBE` on the catalog and database, `SELECT`/`DESCRIBE` on the table), or
 to be a data lake administrator. A plain interactive session has neither by
-default - grant one temporarily, or let the flat refresh in step 8 prove the
-read instead (it runs as `FlatRefreshRole`, which has the grants):
+default - grant one temporarily, or let the SPICE refresh in step 8 prove the
+read instead (QuickSight's service role has the grants):
 
 ```bash
 QID=$(aws athena start-query-execution --region "$REGION" \
@@ -500,22 +498,18 @@ aws athena get-query-execution --query-execution-id "$QID" --region "$REGION" \
 aws athena get-query-results --query-execution-id "$QID" --region "$REGION"
 ```
 
-### 8. Refresh the QuickSight flat table and SPICE dataset manually
+### 8. Refresh the QuickSight dataset manually
 
-The hourly schedule does this automatically; to see it happen without waiting:
-
-```bash
-aws stepfunctions start-execution --region "$REGION" \
-  --state-machine-arn "arn:aws:states:${REGION}:421454275355:stateMachine:${STACK}-flat-refresh" \
-  --name "manual-test-$(date +%s)"
-```
-
-Poll `aws stepfunctions describe-execution --execution-arn <arn from above>`
-until `status` is `SUCCEEDED`, then check the SPICE ingestion it triggered:
+The dataset (built by `quicksight/build.sh`) reads the curated Iceberg table
+directly, and QuickSight refreshes it hourly on its own schedule. To refresh
+now and see the new rows:
 
 ```bash
-aws quicksight list-ingestions --aws-account-id 421454275355 \
-  --data-set-id "${STACK}-bms-environmental" --region "$REGION" \
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+aws quicksight create-ingestion --aws-account-id "$ACCOUNT_ID" --region "$REGION" \
+  --data-set-id "${STACK}-bms-environmental" --ingestion-id "manual-$(date +%s)"
+aws quicksight list-ingestions --aws-account-id "$ACCOUNT_ID" --region "$REGION" \
+  --data-set-id "${STACK}-bms-environmental" \
   --query "Ingestions[0].{Status:IngestionStatus,Rows:RowInfo.RowsIngested}"
 ```
 
@@ -576,3 +570,9 @@ and database, `SELECT`/`DESCRIBE` on the table, `glue:*` and
 query `798dc310-aae4-4295-afa0-3e19b8404a80`). Why the sandbox differed is
 unknown - an AWS-side change, or a grant missing there. The admin workaround
 has been removed; the deploy role is the only data lake administrator.
+
+The same day, QuickSight was confirmed able to load the curated table into
+SPICE directly (it had also failed with `CATALOG_NOT_FOUND` in the sandbox).
+So the intermediate flat table in the default Glue catalog, and the Step
+Functions job that copied curated rows into it hourly, have been removed:
+QuickSight's dataset now reads the curated table itself.

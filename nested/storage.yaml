@@ -132,11 +132,8 @@ Resources:
         Status: Suspended
       LifecycleConfiguration:
         Rules:
-          # Scoped to the workgroup's ad-hoc result location (see
-          # AnalyticsWorkGroup in analytics.yaml) — NOT bucket-wide, so the
-          # QuickSight flat tables living under curated-flat/ are not swept up
-          # on the same 7-day clock. Those are dropped and rebuilt by the
-          # refresh state machine instead, not by time.
+          # Scoped to the workgroup's result location (see AnalyticsWorkGroup
+          # in analytics.yaml).
           - Id: expire-query-results
             Status: Enabled
             Prefix: query-results/
