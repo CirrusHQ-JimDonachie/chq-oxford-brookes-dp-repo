@@ -72,39 +72,35 @@ actors:
       - ddb-state
 
   - id: source-repo
-    name: Customer source repository (IaC)
-    kind: system
+    name: Engineers pushing the IaC
+    kind: people
     notes: >-
-      Holds the parameterised IaC. Reached by the pipeline through the
-      CodeConnections connection; the connection must be authorised by a human in
-      the provider before the pipeline can pull.
+      Push the parameterised IaC and Lambda source to the Customer's CodeCommit
+      repository (repo-codecommit); a push to main starts the pipeline.
     entry_points:
-      - repo-connection
+      - repo-codecommit
 
 resources:
   # ---------- CI/CD PIPELINE (SoW Deliverable 3.1) ----------
-  # STATUS (2026-09-23): NOT YET BUILT. Everything below in this section is
-  # design, not deployed state — the sandbox stack was deployed manually via
-  # sam build/package/deploy. Blocked on the Customer granting access to their
-  # GitHub repo and AWS account; the plan is CodeConnections against that repo,
-  # triggering on changes to its main branch.
+  # STATUS (2026-10-21): BUILT AND PROVEN in the Customer account
+  # (552969575108). building-data-dev-pipeline deploys the whole application
+  # unattended on a push to obu-data-test. pipeline.yaml is its own stack,
+  # deployed once by hand (it must exist before it can deploy anything).
   - category: compute
-    type: codestar
-    id: repo-connection
-    name: CodeConnections connection
+    type: codecommit
+    id: repo-codecommit
+    name: CodeCommit repository (obu-data-test)
     count: 1
     notes: >-
-      CodeConnections connection to the Customer's source repository (GitHub via
-      the GitHub App, or GitLab/Bitbucket), consumed by the pipeline's
-      CodeStarSourceConnection source action. MANUAL POST-APPLY STEP: IaC creates
-      the connection in PENDING status — a human must authorise the installation
-      app in the provider before the pipeline can pull source. ASSUMPTION: the
-      Customer supplies the repository at kickoff; if the Customer has an
-      existing pipeline this deliverable adapts to it instead. IaC FLAVOUR IS
-      SETTLED: CloudFormation. The deploy stage is a CloudFormation deploy
-      action assuming iam-iac-exec, so the pipeline's CFN action permissions sit
-      on iam-pipeline while the stack's resource-creation permissions sit on the
-      separate execution role.
+      The Customer's own AWS CodeCommit repository, holding the parameterised
+      IaC and the Lambda source. Used instead of GitHub because the Customer has
+      no GitHub repository; being native to the account, it needs no
+      CodeConnections connection and no manual app-authorisation step. Created
+      by the Customer out of band (not stack-managed), like the ECR repository
+      and the SAM/CFN artifact bucket. IaC FLAVOUR IS SETTLED: CloudFormation.
+      The deploy stage is a CloudFormation deploy action assuming iam-iac-exec,
+      so the pipeline's CFN action permissions sit on iam-pipeline while the
+      stack's resource-creation permissions sit on the separate execution role.
     connections:
       - pipeline
 
@@ -115,7 +111,8 @@ resources:
     count: 1
     notes: >-
       Builds and deploys every other deliverable as parameterised IaC. Source
-      stage = CodeStarSourceConnection via repo-connection; build stage =
+      stage = CodeCommit (repo-codecommit, main branch, polled, so a push starts
+      a run within about a minute); build stage =
       build-project; deploy stage = the IaC deploy action assuming iam-iac-exec.
       Production promotion later is a parameter change, not a process change.
       The deploy action's permissions sit on the pipeline service role, while
@@ -133,7 +130,8 @@ resources:
     notes: >-
       Synthesises/packages the IaC and the Lambda deployment artefact before the
       deploy action. Writes to pipeline-artifacts; logs to its own CloudWatch log
-      group (see logs). SSE-KMS via cmk.
+      group (see logs). Encrypts with the pipeline's own bootstrap KMS key, not
+      cmk: the pipeline exists before the application stack that creates cmk.
     connections:
       - pipeline-artifacts
 
@@ -143,7 +141,9 @@ resources:
     name: Pipeline artifact bucket
     count: 1
     notes: >-
-      CodePipeline artifact store. SSE-KMS (cmk), bucket policy restricting
+      CodePipeline artifact store. SSE-KMS with the pipeline bootstrap key (not
+      cmk, which doesn't exist until the application's first deploy), versioned,
+      bucket policy restricting
       access to the pipeline and build service roles — a bucket policy alone does
       NOT grant service access, the service roles must allow it too. Lifecycle
       expiry on old artefacts.
@@ -504,21 +504,21 @@ resources:
     id: iam-pipeline
     name: CodePipeline service role
     count: 1
-    notes: Pipeline service role — get/put on pipeline-artifacts, UseConnection on repo-connection, the IaC deploy action permissions, and iam:PassRole scoped to iam-iac-exec only. NOT YET BUILT — see the CI/CD pipeline section's status note.
+    notes: Pipeline service role — get/put on pipeline-artifacts, the CodeCommit source action's read permissions on repo-codecommit (GetBranch, GetCommit, UploadArchive and the archive status calls), the IaC deploy action permissions, and iam:PassRole scoped to iam-iac-exec only.
 
   - category: iam
     type: iam_role
     id: iam-codebuild
     name: CodeBuild service role
     count: 1
-    notes: Build service role — get/put on pipeline-artifacts, write to its log group, and kms decrypt/generate on cmk. NOT YET BUILT — see the CI/CD pipeline section's status note.
+    notes: Build service role — get/put on pipeline-artifacts, write to its log group, kms decrypt/generate on the pipeline bootstrap key, and push to the transform function's ECR repository.
 
   - category: iam
     type: iam_role
     id: iam-iac-exec
     name: IaC execution role
     count: 1
-    notes: Assumed by the IaC deploy action to create every other resource in this HLD. Deliberately separate from iam-pipeline so provisioned-resource permissions are split from pipeline permissions. NOT YET BUILT — see the CI/CD pipeline section's status note.
+    notes: Assumed by the IaC deploy action to create every other resource in this HLD. Deliberately separate from iam-pipeline so provisioned-resource permissions are split from pipeline permissions. Also the only Lake Formation data lake administrator. Its permission list was completed by deploying for real into the Customer account; each gap found is documented inline in pipeline.yaml.
 
   # ---------- MONITORING ----------
   - category: monitoring
@@ -526,7 +526,7 @@ resources:
     id: logs
     name: Log groups
     count: 3
-    notes: fn-transform log group + API Gateway log group + CodeBuild build log group, KMS-encrypted. Each lives in its owner's deliverable, not a separate observability bucket.
+    notes: fn-transform log group + API Gateway log group (both KMS-encrypted with cmk) + CodeBuild build log group (default AWS-owned-key encryption; build logs aren't application data, and cmk's key policy only covers the two application log groups). Each lives in its owner's deliverable, not a separate observability bucket.
 
   - category: monitoring
     type: cloudwatch
