@@ -200,8 +200,13 @@ clear it, as part of any teardown.
 - **QuickSight.** The account has to be subscribed to QuickSight Enterprise in
   eu-west-2, with at least one Author Pro user, before the analytics stack
   deploys. `QuickSightServiceRoleArn` and `QuickSightPrincipalArn` come from
-  that subscription. Datasets, dashboards and the Q topic are built in the
-  console on top of the data source this stack creates.
+  that subscription. After the first deploy, `quicksight/build.sh` builds the
+  datasets (with row-level security) and both dashboards on top of the data
+  source this stack creates; re-runnable. The account needs SPICE capacity
+  first: Author Pro's 10 GB is a credit against purchased SPICE, not
+  capacity that's already allocated, so buy it under Manage account -> SPICE
+  capacity or `create-data-set` fails with "Insufficient SPICE capacity".
+  The Q topic is still built in the console, and needs Q enabled.
 - **The alert e-mail subscription** sits in PendingConfirmation until the
   recipient follows the link AWS sends. Nothing is delivered until they do.
   Confirm one notification end to end before treating alerting as working.

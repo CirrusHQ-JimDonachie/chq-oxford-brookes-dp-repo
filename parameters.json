@@ -17,7 +17,7 @@
   },
   {
     "ParameterKey": "QuickSightPrincipalArn",
-    "ParameterValue": "arn:aws:quicksight:eu-west-2:552969575108:user/default/jim.donachie"
+    "ParameterValue": "arn:aws:quicksight:eu-west-2:552969575108:user/default/CirrusHQSupportAccess/Jim_Donachie"
   },
   {
     "ParameterKey": "DataProviderPrincipalArn",
