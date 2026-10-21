@@ -68,10 +68,10 @@ sam deploy \
 ```
 
 `CAPABILITY_IAM` covers every role the stacks create except one.
-`CAPABILITY_NAMED_IAM` is for that one: `analytics.yaml`'s `FlatRefreshRole` is
-named deterministically, so `foundation.yaml`'s `DataLakeSettings` can add it
-to the Lake Formation admins list by ARN without a forward cross-stack
-reference (see the comment there). `CAPABILITY_AUTO_EXPAND` covers the SAM
+`CAPABILITY_NAMED_IAM` is for that one: `analytics.yaml`'s `FlatRefreshRole`
+has a fixed name. (It was named so `foundation.yaml` could make it a Lake
+Formation admin by ARN; that admin entry has since been removed, but renaming
+the role would replace it, so the name stays.) `CAPABILITY_AUTO_EXPAND` covers the SAM
 transform on the transform function — a template-level expansion CloudFormation
 does server-side, unrelated to and not a substitute for the image build above.
 
@@ -278,8 +278,7 @@ Before that first create, also have in place: the ECR repository policy (see
 above), QuickSight subscribed with Athena access enabled under Manage account
 -> Permissions -> AWS resources (this is what creates and registers
 `aws-quicksight-service-role-v0`; creating the IAM role by hand is not
-enough), and `FlatRefreshRole`'s Lake Formation admin entry left out of
-`foundation.yaml` until the first create has made the role.
+enough).
 
 ## Things to watch on the first deployment and the first file drop
 
@@ -484,13 +483,11 @@ reset to `OK` (with a recovery notification, if configured).
 
 ### 7. Confirm the curated Iceberg write (cold path)
 
-Only a Lake Formation data-lake administrator can currently query the
-`s3tablescatalog` federated catalog directly (see "One thing worth knowing"
-below) — as that principal. Once the pipeline is the one deploying (`pipeline.yaml`,
-`DeployRoleArn` = `IacExecRole`), that principal is `IacExecRole`, not a human
-SSO session — this step then needs assuming that role (its trust policy would
-need widening to allow it) or a temporary second admin entry, not a plain
-interactive AWS CLI session:
+The querying principal needs Lake Formation grants on the curated tables
+(`DESCRIBE` on the catalog and database, `SELECT`/`DESCRIBE` on the table), or
+to be a data lake administrator. A plain interactive session has neither by
+default - grant one temporarily, or let the flat refresh in step 8 prove the
+read instead (it runs as `FlatRefreshRole`, which has the grants):
 
 ```bash
 QID=$(aws athena start-query-execution --region "$REGION" \
@@ -567,15 +564,15 @@ aws cognito-idp admin-set-user-password --user-pool-id "$USER_POOL_ID" --region 
   --username jim.donachie@cirrushq.com --password '<a password meeting the pool policy>' --permanent
 ```
 
-### One thing worth knowing: Athena access is admin-only right now
+### Athena access to the curated tables: ordinary grants work
 
-Step 7 above only works as a Lake Formation data-lake administrator. An
-ordinary IAM principal — even with a full `glue:*` on `*` policy and every
-normal Lake Formation SELECT/DESCRIBE grant — currently cannot resolve the
-`s3tablescatalog` federated catalog via Athena at all: every attempt fails with
-`CATALOG_NOT_FOUND`. This was confirmed directly this session, including
-against two different Glue resource-link workarounds (each failed a different
-way), so it is a genuine current AWS platform limitation, not a
-misconfiguration here. It is why `nested/analytics.yaml`'s QuickSight
-flat-table refresh role had to be added to the Lake Formation admin list in
-`nested/foundation.yaml` — a PoC-only shortcut, documented there as such.
+In the September sandbox, a non-admin principal with `glue:*` and Lake
+Formation `SELECT`/`DESCRIBE` grants got `CATALOG_NOT_FOUND` querying
+`s3tablescatalog` through Athena, so `FlatRefreshRole` was made a data lake
+administrator as a workaround. That does not reproduce in the Customer
+account: on 2026-10-21 a throwaway role with only `DESCRIBE` on the catalog
+and database, `SELECT`/`DESCRIBE` on the table, `glue:*` and
+`lakeformation:GetDataAccess` queried the curated table successfully (Athena
+query `798dc310-aae4-4295-afa0-3e19b8404a80`). Why the sandbox differed is
+unknown - an AWS-side change, or a grant missing there. The admin workaround
+has been removed; the deploy role is the only data lake administrator.

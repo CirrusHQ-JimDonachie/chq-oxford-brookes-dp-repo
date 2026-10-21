@@ -182,11 +182,8 @@ Resources:
       PermissionsWithGrantOption: []
 
   # Mirrors QuickSightDatabaseGrant/QuickSightTableGrant: the refresh job
-  # reads the same curated source those do. Being a Lake Formation admin
-  # (foundation.yaml) resolves the federated catalog at all, but data access
-  # still needs its own grant — confirmed directly, admin status alone still
-  # hit "Insufficient permissions... Principal does not have any privilege on
-  # specified resource" on the source table until this was added.
+  # reads the same curated source those do. These grants are its only access
+  # to the curated tables - it is not a Lake Formation admin.
   FlatRefreshSourceDatabaseGrant:
     Type: AWS::LakeFormation::PrincipalPermissions
     Properties:

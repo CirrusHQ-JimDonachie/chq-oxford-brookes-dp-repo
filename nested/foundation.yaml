@@ -223,18 +223,10 @@ Resources:
     Properties:
       Admins:
         - DataLakePrincipalIdentifier: !Ref DeployRoleArn
-      # PoC-only shortcut, not a production pattern: only a Lake Formation
-      # admin-equivalent principal can currently resolve the s3tablescatalog
-      # federated catalog via Athena at all — confirmed directly, an ordinary
-      # principal with full IAM (glue:* on *) and LF SELECT/DESCRIBE/catalog
-      # grants still hit CATALOG_NOT_FOUND. The flat-table refresh job
-      # (analytics.yaml, FlatRefreshRole) needs to read the curated source
-      # table, so it needs to be an admin too. Confirmed directly: Lake
-      # Formation validates the principal at PutDataLakeSettings time and
-      # rejects a role that doesn't exist yet ("Invalid principal") — on a
-      # from-scratch deployment this entry has to be added on a SECOND
-      # deploy, once the first has created FlatRefreshRole (analytics.yaml).
-        - DataLakePrincipalIdentifier: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectSlug}-${Environment}-flat-refresh'
+      # The deploy role is the only admin. Readers of the curated tables
+      # (FlatRefreshRole, QuickSight) get ordinary grants in analytics.yaml -
+      # confirmed against the Customer account that a non-admin role with
+      # those grants can query s3tablescatalog via Athena.
       MutationType: REPLACE
       Parameters:
         CROSS_ACCOUNT_VERSION: '4'
