@@ -1,0 +1,24 @@
+{
+  "pk": {"S": "config#aruba#ap_counts"},
+  "sk": {"S": "mapping"},
+  "input_format": {"S": "csv"},
+  "has_header": {"BOOL": true},
+  "fields": {"L": [
+    {"M": {"from": {"S": "Client Name"}, "to": {"S": "client_id"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Model/OS"}, "to": {"S": "device_type"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "SSID"}, "to": {"S": "ssid"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Role"}, "to": {"S": "role"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Devices"}, "to": {"S": "access_point_id"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Sites"}, "to": {"S": "site_id"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Tx Usage"}, "to": {"S": "tx_usage"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Rx Usage"}, "to": {"S": "rx_usage"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Total Usage"}, "to": {"S": "total_usage"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Connected Since"}, "to": {"S": "connected_since"}, "type": {"S": "timestamp"}, "format": {"S": "iso8601"}}},
+    {"M": {"from": {"S": "Duration"}, "to": {"S": "duration"}, "type": {"S": "string"}}}
+  ]},
+  "validation": {"M": {
+    "required": {"L": [{"S": "client_id"}, {"S": "access_point_id"}, {"S": "connected_since"}]}
+  }},
+  "entity": {"M": {"type": {"S": "access_point"}, "key_field": {"S": "access_point_id"}}},
+  "target_table": {"S": "building_data.wifi_client_sessions"}
+}
