@@ -1,0 +1,38 @@
+{
+  "pk": {"S": "config#reference#rooms"},
+  "sk": {"S": "mapping"},
+  "input_format": {"S": "csv"},
+  "has_header": {"BOOL": true},
+  "fields": {"L": [
+    {"M": {"from": {"S": "Room Name"}, "to": {"S": "room_id"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Room Code"}, "to": {"S": "room_code"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Campus Name"}, "to": {"S": "campus"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Building Code"}, "to": {"S": "building_code"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Building Name"}, "to": {"S": "building_name"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Building Use"}, "to": {"S": "building_use"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Floor Code"}, "to": {"S": "floor_code"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Room Standard"}, "to": {"S": "room_standard"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Room Category"}, "to": {"S": "room_category"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Room Type"}, "to": {"S": "room_type"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Room Use"}, "to": {"S": "room_use"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Division Code"}, "to": {"S": "division_code"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Department Code"}, "to": {"S": "department_code"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Department Name"}, "to": {"S": "department_name"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Room Area"}, "to": {"S": "room_area_m2"}, "type": {"S": "decimal"}}},
+    {"M": {"from": {"S": "Chargeable Area"}, "to": {"S": "chargeable_area_m2"}, "type": {"S": "decimal"}}},
+    {"M": {"from": {"S": "Prorate"}, "to": {"S": "prorate"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Hierarchy Level"}, "to": {"S": "hierarchy_level"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Option 1"}, "to": {"S": "option_1"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Aruba AP"}, "to": {"S": "access_point_id"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Room occupancy sensors"}, "to": {"S": "occupancy_sensor_id"}, "type": {"S": "string"}}}
+  ]},
+  "validation": {"M": {
+    "required": {"L": [{"S": "room_id"}, {"S": "room_code"}, {"S": "floor_code"}]},
+    "ranges": {"M": {
+      "room_area_m2": {"M": {"min": {"S": "0"}, "max": {"S": "10000"}}},
+      "chargeable_area_m2": {"M": {"min": {"S": "0"}, "max": {"S": "10000"}}}
+    }}
+  }},
+  "entity": {"M": {"type": {"S": "room_reference"}, "key_field": {"S": "room_id"}}},
+  "target_table": {"S": "building_data.rooms"}
+}
