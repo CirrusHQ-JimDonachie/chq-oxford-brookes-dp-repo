@@ -26,6 +26,7 @@ Metadata:
           - RawRetentionDays
           - ClaimTtlDays
           - ApiEntityType
+          - ReadApiAllowedOrigin
       - Label:
           default: Alerting and logging
         Parameters:
@@ -55,6 +56,8 @@ Metadata:
         default: Delivery claim retention (days)
       ApiEntityType:
         default: Entity type served by the read API
+      ReadApiAllowedOrigin:
+        default: Browser origin allowed to call the read API
       AlertEmail:
         default: Alert e-mail address
       AlertEventSource:
@@ -135,6 +138,14 @@ Parameters:
     Default: room
     AllowedPattern: '^[a-z0-9_-]{1,64}$'
     ConstraintDescription: Lowercase letters, digits, underscores and hyphens.
+  ReadApiAllowedOrigin:
+    Type: String
+    Description: >-
+      Origin a browser page may call the read API from, sent as
+      Access-Control-Allow-Origin; * allows any site.
+    Default: '*'
+    AllowedPattern: '^(\*|https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)$'
+    ConstraintDescription: '* or a scheme and host such as https://dashboard.example.ac.uk, with no path.'
   AlertEmail:
     Type: String
     Description: E-mail address subscribed to the alert topic. The recipient must confirm the subscription before alerts are delivered.
@@ -263,6 +274,7 @@ Resources:
         StateTableArn: !GetAtt EngineStack.Outputs.StateTableArn
         LogRetentionDays: !Ref LogRetentionDays
         ApiEntityType: !Ref ApiEntityType
+        ReadApiAllowedOrigin: !Ref ReadApiAllowedOrigin
 
 Outputs:
   RawLandingBucketName:

@@ -69,6 +69,14 @@ Parameters:
     Default: room
     AllowedPattern: '^[a-z0-9_-]{1,64}$'
     ConstraintDescription: Lowercase letters, digits, underscores and hyphens.
+  ReadApiAllowedOrigin:
+    Type: String
+    Description: >-
+      Origin a browser page may call the read API from, sent as
+      Access-Control-Allow-Origin; * allows any site.
+    Default: '*'
+    AllowedPattern: '^(\*|https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)$'
+    ConstraintDescription: '* or a scheme and host such as https://dashboard.example.ac.uk, with no path.'
   KmsKeyArn:
     Type: String
     Description: ARN of the key that encrypts the state table and the API access log group.
@@ -312,6 +320,8 @@ Resources:
           # successful call. The two below it catch a failed one, so a rejected
           # or throttled read is never returned as a 200 with an empty body.
           - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: !Sub "'${ReadApiAllowedOrigin}'"
             ResponseTemplates:
               # DynamoDB answers a miss with an empty object and a 200. The
               # override turns that into a 404, which is what the client needs
@@ -344,29 +354,100 @@ Resources:
                 #end
           - StatusCode: '400'
             SelectionPattern: '4\d{2}'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: !Sub "'${ReadApiAllowedOrigin}'"
             ResponseTemplates:
               application/json: |
                 {"message": "The request was rejected."}
           - StatusCode: '502'
             SelectionPattern: '5\d{2}'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: !Sub "'${ReadApiAllowedOrigin}'"
             ResponseTemplates:
               application/json: |
                 {"message": "The snapshot store did not answer."}
+      # Every response a browser can see carries the CORS header, or the page
+      # gets an opaque CORS failure instead of the status. The 404 is the 200
+      # entry with its status overridden, so it takes that entry's header.
       MethodResponses:
         - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
         - StatusCode: '400'
-        # Returned by the authorizer, before the integration runs.
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        # Returned by the authorizer, before the integration runs; its header
+        # comes from the gateway responses below.
         - StatusCode: '401'
         - StatusCode: '404'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
         - StatusCode: '502'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # The browser's CORS preflight. It carries no token, so it is unauthenticated,
+  # and it never reaches DynamoDB: a mock integration answers it directly.
+  RoomOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ReadApi
+      ResourceId: !Ref RoomResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      Integration:
+        Type: MOCK
+        # A mock has no backend to pass anything to, so an unmatched content type
+        # falls through to the template rather than failing the preflight.
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '204'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: !Sub "'${ReadApiAllowedOrigin}'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Headers: "'Authorization,Content-Type'"
+              method.response.header.Access-Control-Max-Age: "'600'"
+      MethodResponses:
+        - StatusCode: '204'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Max-Age: true
+
+  # Responses API Gateway produces itself - a 401 from the authorizer, a 403 for
+  # an unknown path, a 429 when throttled - carry the CORS header too, so a
+  # browser page can see an expired token and renew it.
+  Default4xxGatewayResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref ReadApi
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${ReadApiAllowedOrigin}'"
+
+  Default5xxGatewayResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref ReadApi
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${ReadApiAllowedOrigin}'"
 
   # The suffix on this logical id is a hash of the API definition above. Change it
   # whenever a resource, method, integration or template changes: CloudFormation
   # takes a fresh snapshot of the API only for a logical id it has not seen, and
   # the stage keeps serving the previous snapshot otherwise.
-  ReadApiDeployment9c2ad4:
+  ReadApiDeploymentd591e5:
     Type: AWS::ApiGateway::Deployment
-    DependsOn: GetRoomMethod
+    DependsOn:
+      - GetRoomMethod
+      - RoomOptionsMethod
+      - Default4xxGatewayResponse
+      - Default5xxGatewayResponse
     Properties:
       RestApiId: !Ref ReadApi
       Description: Deployment of the current read API definition.
@@ -377,7 +458,7 @@ Resources:
     Properties:
       RestApiId: !Ref ReadApi
       StageName: v1
-      DeploymentId: !Ref ReadApiDeployment9c2ad4
+      DeploymentId: !Ref ReadApiDeploymentd591e5
       Description: The stage the client calls.
       TracingEnabled: false
       AccessLogSetting:

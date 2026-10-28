@@ -40,6 +40,10 @@
     "ParameterValue": "room"
   },
   {
+    "ParameterKey": "ReadApiAllowedOrigin",
+    "ParameterValue": "*"
+  },
+  {
     "ParameterKey": "AlertEmail",
     "ParameterValue": "jim.donachie@cirrushq.com"
   },

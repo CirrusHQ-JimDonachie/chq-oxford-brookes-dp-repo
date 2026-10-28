@@ -14,6 +14,7 @@ Copy `parameters.example.json` to `parameters.json`, fill in the values marked `
 | `RawRetentionDays` | `30` | 1 to 3650 | Days a dropped file and its error output stay in the landing bucket before expiry. |
 | `ClaimTtlDays` | `14` | 1 to 365 | Days the transform function keeps its record of a processed file version. |
 | `ApiEntityType` | `room` | `^[a-z0-9_-]{1,64}$` | Entity type whose current snapshot the read API serves; must match the entity type in the mapping config of the source that feeds it. |
+| `ReadApiAllowedOrigin` | `*` | `*` or a scheme and host, no path | Origin a browser page may call the read API from, sent as `Access-Control-Allow-Origin`. `*` allows any site; set the dashboard's address (e.g. `https://dashboard.brookes.ac.uk`) once it's known. |
 | `AlertEmail` | `<TODO: set me>` | at least 3 characters | E-mail address subscribed to the alert topic. The recipient must confirm the subscription before alerts are delivered. |
 | `AlertEventSource` | `building-data.transform` | `^[a-zA-Z0-9._-]{1,256}$` | Source field the transform function stamps on every threshold event, and the value the routing rule matches on. One parameter feeds both so they cannot drift apart. |
 | `DataQualityAlarmPeriodSeconds` | `300` | one of 300, 900, 1800, 3600, 21600, 86400 | Window over which rejected records are counted before the data-quality alarm fires. |
