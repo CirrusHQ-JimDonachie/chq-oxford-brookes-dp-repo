@@ -76,6 +76,7 @@ class InvocationSummary(TypedDict):
 
     objects_processed: int
     objects_already_claimed: int
+    folders_skipped: int
     rows_written: int
     records_rejected: int
     events_emitted: int
@@ -111,6 +112,7 @@ def lambda_handler(event: S3Event, context: LambdaContext) -> InvocationSummary:
     summary = InvocationSummary(
         objects_processed=0,
         objects_already_claimed=0,
+        folders_skipped=0,
         rows_written=0,
         records_rejected=0,
         events_emitted=0,
@@ -123,6 +125,15 @@ def lambda_handler(event: S3Event, context: LambdaContext) -> InvocationSummary:
             version_id=record.s3.get_object.version_id,
         )
         unit = {**unit_of(ref), "object_key": _safe(ref.key)}
+        if ref.key.endswith("/"):
+            # Creating a folder in the S3 console writes an empty object whose
+            # key ends in "/". It holds no data, so it is not a file to reject.
+            summary["folders_skipped"] += 1
+            logger.info(
+                "folder placeholder skipped",
+                extra={**unit, "function_id": FUNCTION_ID, "operation": "object.skip"},
+            )
+            continue
         metrics.add_metric(name="FilesReceived", unit=MetricUnit.Count, value=1)
         try:
             outcome = process_object(ref, runtime)

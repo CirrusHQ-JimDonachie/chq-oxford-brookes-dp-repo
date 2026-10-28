@@ -78,6 +78,23 @@ def test_handler_decodes_an_encoded_object_key(
     assert wired.rows[0]["source_file"] == spaced_key
 
 
+def test_handler_skips_a_console_folder_placeholder(
+    stack: Stack,
+    wired: RecordingWriter,
+    lambda_context: LambdaContext,
+) -> None:
+    """A console-created folder is an empty key ending in "/", not a file."""
+    folder_key = "raw/aruba/ap_counts/2026/10/07/"
+    put_object(stack.s3, folder_key, b"")
+    event = deepcopy(load_event("s3_object_created"))
+    event["Records"][0]["s3"]["object"]["key"] = folder_key
+    summary = handler.lambda_handler(event, lambda_context)
+    assert summary["folders_skipped"] == 1
+    assert summary["objects_processed"] == 0
+    assert list_keys(stack.s3, ERROR_PREFIX) == []
+    assert wired.rows == []
+
+
 def test_handler_reports_a_repeat_delivery_as_already_claimed(
     stack: Stack,
     wired: RecordingWriter,

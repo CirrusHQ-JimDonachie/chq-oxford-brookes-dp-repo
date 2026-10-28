@@ -251,12 +251,17 @@ Resources:
             Condition:
               Bool:
                 'aws:SecureTransport': false
-          - Sid: DenyUploadsWithoutKeyEncryption
+          # Denies only a write that asks for some other encryption. A write
+          # with no header takes the bucket default (the platform key), so the
+          # transform's copies into error/ and plain console uploads both work.
+          - Sid: DenyUploadsWithOtherEncryption
             Effect: Deny
             Principal: '*'
             Action: 's3:PutObject'
             Resource: !Sub '${RawLandingBucket.Arn}/*'
             Condition:
+              'Null':
+                's3:x-amz-server-side-encryption': 'false'
               StringNotEquals:
                 's3:x-amz-server-side-encryption': 'aws:kms'
           # Writes land only under the drop prefix; the listing covers the whole

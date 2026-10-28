@@ -395,8 +395,9 @@ aws dynamodb put-item --table-name "$CONFIG_TABLE" --item "file:///tmp/mapping-c
 
 ### 2. Drop a test file
 
-The raw bucket's bucket policy denies any upload that doesn't carry the
-`aws:kms` encryption header — `--sse aws:kms` is not optional:
+The raw bucket encrypts every upload with the platform key by default; its
+bucket policy only refuses an upload that asks for some other encryption, so
+no `--sse` flag is needed:
 
 ```bash
 DATE_PATH=$(date -u +%Y/%m/%d)
@@ -406,7 +407,7 @@ SensorRef,Timestamp,RoomTemp,RH
 NHHB-2.14,$NOW_MS,215,47.5
 EOF
 aws s3 cp /tmp/test-drop.csv "s3://${RAW_BUCKET}/raw/bms/environmental/${DATE_PATH}/test-drop.csv" \
-  --region "$REGION" --sse aws:kms
+  --region "$REGION"
 ```
 
 ### 3. Confirm the transform succeeded
