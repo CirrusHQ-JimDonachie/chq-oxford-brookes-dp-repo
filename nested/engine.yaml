@@ -767,11 +767,15 @@ Resources:
       ActionsEnabled: true
       # Matches the metrics namespace the function publishes under.
       Namespace: !Sub '${ProjectSlug}/${Environment}'
-      # No dimensions: the function emits an undimensioned total alongside the
-      # per-source and per-reason series, because CloudWatch returns data only for
-      # dimension combinations that have been published and this alarm cannot wait
-      # for a source to reject something first.
+      # The total series, not a per-source or per-reason one: CloudWatch returns
+      # data only for dimension combinations that have been published, and this
+      # alarm cannot wait for a source to reject something first. Powertools stamps
+      # every metric with the service name, so the total carries that dimension
+      # and an alarm with none would watch a series that never exists.
       MetricName: RejectedRecords
+      Dimensions:
+        - Name: service
+          Value: transform
       Statistic: Sum
       Period: !Ref DataQualityAlarmPeriodSeconds
       EvaluationPeriods: 1
