@@ -12,7 +12,7 @@ with `NO_MAPPING_CONFIG` is not retried on its own: re-drop it.
 
 | File | Source folder | Target table | Status |
 | --- | --- | --- | --- |
-| `weather-hourly.json` | `raw/weather/hourly/` | `building_data.weather_hourly` | Draft, awaiting Oxford Brookes sign-off |
+| `weather-hourly.json` | `raw/weather/hourly/` | `building_data.weather_hourly` | Draft for the Open-Meteo archive CSV (2026-10-30 file maps in full), awaiting Oxford Brookes sign-off |
 | `aruba-ap_counts.json` | `raw/aruba/ap_counts/` | `building_data.wifi_client_sessions` | Draft, awaiting Oxford Brookes sign-off |
 | `reference-rooms.json` | `raw/reference/rooms/` | `building_data.rooms` | Loaded 2026-10-28 (207 rooms) |
 
@@ -43,8 +43,30 @@ uv run --no-project --with openpyxl python mapping-configs/rooms_xlsx_to_csv.py 
   "RS NHHB-Room Data-Sept 2026.xlsx" nhhb-rooms.csv
 ```
 
+Oxford Brookes keep the list up to date by editing the same spreadsheet and
+re-sending it (agreed 2026-10-29). Each new version is converted and dropped
+under that day's date folder; nothing else changes.
+
+One row, room code `G0.1U`, has no room name and is rejected on every load.
+Oxford Brookes confirmed it is an accessible toilet (NHHB.G.01U) and can be
+ignored, so that rejection, and the rejected-records alarm email it sets off,
+are expected.
+
 The table is append-only, so a re-sent list adds a second copy. Queries over it
 take only the latest file: `WHERE source_file = (SELECT max_by(source_file,
 ingested_at) FROM rooms)`.
+
+## Weather
+
+Oxford Brookes pull hourly weather from the Open-Meteo historical archive
+(`https://archive-api.open-meteo.com/v1/archive`), in its default units (°C, %,
+mm, km/h, W/m²), with times in UTC. The API returns one list per measurement,
+which the engine cannot read, so they flatten it to one CSV row per hour and
+add a `location` column, as `weather-hourly.json` expects.
+
+The table only adds rows, so files must not overlap: each should cover whole
+days that have finished. The archive also returns the rest of the current day,
+which cannot yet be observed, so a file ending today repeats hours the next
+file will carry again.
 
 The `bms/environmental` config used by the smoke test is in `DEPLOYMENT.md`.

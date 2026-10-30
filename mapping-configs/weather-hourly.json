@@ -4,26 +4,28 @@
   "input_format": {"S": "csv"},
   "has_header": {"BOOL": true},
   "fields": {"L": [
-    {"M": {"from": {"S": "timestamp"}, "to": {"S": "reading_at"}, "type": {"S": "timestamp"}, "format": {"S": "iso8601"}}},
-    {"M": {"from": {"S": "location_name"}, "to": {"S": "location_id"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "time"}, "to": {"S": "reading_at"}, "type": {"S": "timestamp"}, "format": {"S": "iso8601"}}},
+    {"M": {"from": {"S": "location"}, "to": {"S": "location_id"}, "type": {"S": "string"}}},
     {"M": {"from": {"S": "latitude"}, "to": {"S": "latitude"}, "type": {"S": "decimal"}}},
     {"M": {"from": {"S": "longitude"}, "to": {"S": "longitude"}, "type": {"S": "decimal"}}},
-    {"M": {"from": {"S": "air_temperature"}, "to": {"S": "air_temperature_c"}, "type": {"S": "decimal"}}},
-    {"M": {"from": {"S": "relative_humidity"}, "to": {"S": "humidity_pct"}, "type": {"S": "decimal"}}},
-    {"M": {"from": {"S": "feels_like_temperature"}, "to": {"S": "feels_like_temperature_c"}, "type": {"S": "decimal"}}},
-    {"M": {"from": {"S": "wind_speed"}, "to": {"S": "wind_speed_ms"}, "type": {"S": "decimal"}}},
-    {"M": {"from": {"S": "prob_precipitation"}, "to": {"S": "precipitation_probability_pct"}, "type": {"S": "decimal"}}},
-    {"M": {"from": {"S": "solar_radiation"}, "to": {"S": "solar_radiation_wm2"}, "type": {"S": "decimal"}}}
+    {"M": {"from": {"S": "temperature_2m"}, "to": {"S": "air_temperature_c"}, "type": {"S": "decimal"}}},
+    {"M": {"from": {"S": "relative_humidity_2m"}, "to": {"S": "humidity_pct"}, "type": {"S": "decimal"}}},
+    {"M": {"from": {"S": "apparent_temperature"}, "to": {"S": "feels_like_temperature_c"}, "type": {"S": "decimal"}}},
+    {"M": {"from": {"S": "precipitation"}, "to": {"S": "precipitation_mm"}, "type": {"S": "decimal"}}},
+    {"M": {"from": {"S": "wind_speed_10m"}, "to": {"S": "wind_speed_kmh"}, "type": {"S": "decimal"}}},
+    {"M": {"from": {"S": "shortwave_radiation"}, "to": {"S": "solar_radiation_wm2"}, "type": {"S": "decimal"}}},
+    {"M": {"from": {"S": "cloud_cover"}, "to": {"S": "cloud_cover_pct"}, "type": {"S": "decimal"}}}
   ]},
   "validation": {"M": {
-    "required": {"L": [{"S": "reading_at"}, {"S": "location_id"}, {"S": "air_temperature_c"}]},
+    "required": {"L": [{"S": "reading_at"}, {"S": "location_id"}, {"S": "air_temperature_c"}, {"S": "humidity_pct"}]},
     "ranges": {"M": {
       "air_temperature_c": {"M": {"min": {"S": "-30"}, "max": {"S": "45"}}},
       "feels_like_temperature_c": {"M": {"min": {"S": "-40"}, "max": {"S": "50"}}},
       "humidity_pct": {"M": {"min": {"S": "0"}, "max": {"S": "100"}}},
-      "wind_speed_ms": {"M": {"min": {"S": "0"}, "max": {"S": "60"}}},
-      "precipitation_probability_pct": {"M": {"min": {"S": "0"}, "max": {"S": "100"}}},
-      "solar_radiation_wm2": {"M": {"min": {"S": "0"}, "max": {"S": "1400"}}}
+      "precipitation_mm": {"M": {"min": {"S": "0"}, "max": {"S": "100"}}},
+      "wind_speed_kmh": {"M": {"min": {"S": "0"}, "max": {"S": "200"}}},
+      "solar_radiation_wm2": {"M": {"min": {"S": "0"}, "max": {"S": "1400"}}},
+      "cloud_cover_pct": {"M": {"min": {"S": "0"}, "max": {"S": "100"}}}
     }}
   }},
   "entity": {"M": {"type": {"S": "site"}, "key_field": {"S": "location_id"}}},
