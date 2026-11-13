@@ -1,0 +1,31 @@
+{
+  "pk": {"S": "config#smartvis#occupancy"},
+  "sk": {"S": "mapping"},
+  "input_format": {"S": "csv"},
+  "has_header": {"BOOL": true},
+  "fields": {"L": [
+    {"M": {"from": {"S": "reading_at_utc"}, "to": {"S": "reading_at"}, "type": {"S": "timestamp"}, "format": {"S": "iso8601"}}},
+    {"M": {"from": {"S": "room_id"}, "to": {"S": "room_id"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "room_code"}, "to": {"S": "room_code"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Building"}, "to": {"S": "building_name"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Space"}, "to": {"S": "space_name"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "local_date"}, "to": {"S": "local_date"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "local_time"}, "to": {"S": "local_time"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "utc_offset"}, "to": {"S": "utc_offset"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Occupancy (People Count - IMB)"}, "to": {"S": "people_count"}, "type": {"S": "decimal"}}},
+    {"M": {"from": {"S": "Occupancy (Presence - Elsys Eye)"}, "to": {"S": "presence"}, "type": {"S": "decimal"}}},
+    {"M": {"from": {"S": "Capacity"}, "to": {"S": "capacity"}, "type": {"S": "integer"}}},
+    {"M": {"from": {"S": "Area"}, "to": {"S": "area_m2"}, "type": {"S": "decimal"}}}
+  ]},
+  "validation": {"M": {
+    "required": {"L": [{"S": "reading_at"}, {"S": "room_id"}]},
+    "ranges": {"M": {
+      "people_count": {"M": {"min": {"S": "0"}, "max": {"S": "1000"}}},
+      "presence": {"M": {"min": {"S": "0"}, "max": {"S": "1"}}},
+      "capacity": {"M": {"min": {"S": "0"}, "max": {"S": "1000"}}},
+      "area_m2": {"M": {"min": {"S": "0"}, "max": {"S": "10000"}}}
+    }}
+  }},
+  "entity": {"M": {"type": {"S": "room"}, "key_field": {"S": "room_id"}}},
+  "target_table": {"S": "building_data.smartvis_occupancy"}
+}
