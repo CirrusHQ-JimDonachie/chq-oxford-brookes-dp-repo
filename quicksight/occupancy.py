@@ -322,10 +322,14 @@ def dashboard(occupancy_arn, coverage_arn):
                     ]}}}},
             {"LineChartVisual": {"VisualId": "q-trend", **title(
                 "Coverage by day", "All selected door-counter rooms together"),
-                "ChartConfiguration": {"FieldWells": {"LineChartAggregatedFieldWells": {
-                    "Category": [date_dim("qt-day", cov, "local_date")],
-                    "Values": [measure("qt-cov", cov, "coverage_pct", fmt=PCT)],
-                    "Colors": []}}}}},
+                "ChartConfiguration": {
+                    "FieldWells": {"LineChartAggregatedFieldWells": {
+                        "Category": [date_dim("qt-day", cov, "local_date")],
+                        "Values": [measure("qt-cov", cov, "coverage_pct", fmt=PCT)],
+                        "Colors": []}},
+                    "XAxisLabelOptions": labels(cov, ("qt-day", "local_date", "Date")),
+                    "PrimaryYAxisLabelOptions": labels(cov, ("qt-cov", "coverage_pct", "Coverage")),
+                    "Tooltip": tooltip(("qt-day", "Date"), ("qt-cov", "Coverage"))}}},
         ],
         "Layouts": grid(("q-coverage", 9, 6), ("q-gap", 9, 6), ("q-resets", 9, 6),
                         ("q-corr", 9, 6), ("q-rooms", 36, 14), ("q-trend", 36, 10)),
