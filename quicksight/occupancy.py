@@ -95,6 +95,25 @@ PCT = number_format(1, "%")
 ONE_DP = number_format(1)
 
 
+def labels(ds, *fields):
+    """Axis labels: AxisLabelOptions for (field id, column, label) triples. Without them
+    QuickSight shows the column name, e.g. "people_count_core (Average)"."""
+    return {"AxisLabelOptions": [
+        {"CustomLabel": label, "ApplyTo": {"FieldId": field_id, "Column": col(ds, name)}}
+        for field_id, name, label in fields]}
+
+
+def tooltip(*fields):
+    """A tooltip naming each (field id, label) pair, instead of the column names."""
+    return {"TooltipVisibility": "VISIBLE", "SelectedTooltipType": "DETAILED",
+            "FieldBasedTooltip": {"AggregationVisibility": "HIDDEN",
+                                  "TooltipTitleType": "PRIMARY_VALUE",
+                                  "TooltipFields": [
+                                      {"FieldTooltipItem": {"FieldId": f, "Label": label,
+                                                            "Visibility": "VISIBLE"}}
+                                      for f, label in fields]}}
+
+
 def kpi(visual_id, text, value, subtitle=None):
     return {"KPIVisual": {"VisualId": visual_id, **title(text, subtitle),
                           "ChartConfiguration": {"FieldWells": {"Values": [value]}}}}
@@ -158,16 +177,24 @@ def dashboard(occupancy_arn, coverage_arn):
                     "FieldWells": {"Values": [measure("g-util", occ, "utilisation_pct_core",
                                                       "AVERAGE", PCT)]},
                     "GaugeChartOptions": {"Arc": {"ArcAngle": 180},
-                                          "ArcAxis": {"Range": {"Min": 0, "Max": 100}}}}}},
+                                          "ArcAxis": {"Range": {"Min": 0, "Max": 100}}},
+                    "TooltipOptions": tooltip(("g-util", "Average % of capacity"))}}},
             {"HeatMapVisual": {"VisualId": "occ-heat", **title(
                 "Average people per room by weekday and hour",
                 "Door-counter rooms, UK local time; correction readings left out"),
-                "ChartConfiguration": {"FieldWells": {"HeatMapAggregatedFieldWells": {
-                    "Rows": [dim("h-day", occ, "weekday")],
-                    "Columns": [{"NumericalDimensionField": {
-                        "FieldId": "h-hour", "Column": col(occ, "hour_of_day")}}],
-                    "Values": [measure("h-val", occ, "people_count_scheduled", "AVERAGE", ONE_DP)],
-                }}}}},
+                "ChartConfiguration": {
+                    "FieldWells": {"HeatMapAggregatedFieldWells": {
+                        "Rows": [dim("h-day", occ, "weekday")],
+                        "Columns": [{"NumericalDimensionField": {
+                            "FieldId": "h-hour", "Column": col(occ, "hour_of_day")}}],
+                        "Values": [measure("h-val", occ, "people_count_scheduled", "AVERAGE", ONE_DP)],
+                    }},
+                    "RowLabelOptions": labels(occ, ("h-day", "weekday", "Weekday")),
+                    "ColumnLabelOptions": labels(occ, ("h-hour", "hour_of_day", "Hour starting")),
+                    "Legend": {"Visibility": "VISIBLE", "Title": {
+                        "Visibility": "VISIBLE", "CustomLabel": "Average people"}},
+                    "Tooltip": tooltip(("h-day", "Weekday"), ("h-hour", "Hour starting"),
+                                       ("h-val", "Average people per room"))}}},
             {"BarChartVisual": {"VisualId": "occ-floor", **title(
                 "Occupancy as % of capacity by floor",
                 "Average, door-counter rooms, weekdays 08:00-18:00 UK time"),
@@ -175,7 +202,11 @@ def dashboard(occupancy_arn, coverage_arn):
                     "BarChartAggregatedFieldWells": {
                         "Category": [dim("f-floor", occ, "floor")],
                         "Values": [measure("f-util", occ, "utilisation_pct_core", "AVERAGE", PCT)],
-                    }}}}},
+                    }},
+                    "CategoryLabelOptions": labels(occ, ("f-floor", "floor", "Floor")),
+                    "ValueLabelOptions": labels(occ, ("f-util", "utilisation_pct_core",
+                                                      "Average % of capacity")),
+                    "Tooltip": tooltip(("f-floor", "Floor"), ("f-util", "Average % of capacity"))}}},
             {"BarChartVisual": {"VisualId": "occ-type", **title(
                 "Occupancy as % of capacity by room type",
                 "Average, door-counter rooms, weekdays 08:00-18:00 UK time"),
@@ -183,37 +214,60 @@ def dashboard(occupancy_arn, coverage_arn):
                     "BarChartAggregatedFieldWells": {
                         "Category": [dim("t-type", occ, "room_type")],
                         "Values": [measure("t-util", occ, "utilisation_pct_core", "AVERAGE", PCT)],
-                    }}}}},
+                    }},
+                    "CategoryLabelOptions": labels(occ, ("t-type", "room_type", "Room type")),
+                    "ValueLabelOptions": labels(occ, ("t-util", "utilisation_pct_core",
+                                                      "Average % of capacity")),
+                    "Tooltip": tooltip(("t-type", "Room type"), ("t-util", "Average % of capacity"))}}},
             {"BarChartVisual": {"VisualId": "occ-peak", **title(
                 "Peak people count against capacity by room",
-                "Highest five-minute count in the selected dates"),
+                "Highest five-minute count in the selected dates, door-counter rooms"),
                 "ChartConfiguration": {"Orientation": "HORIZONTAL", "BarsArrangement": "CLUSTERED",
                     "FieldWells": {"BarChartAggregatedFieldWells": {
                         "Category": [dim("p-room", occ, "room_id")],
-                        "Values": [measure("p-peak", occ, "people_count_scheduled", "MAX"),
-                                   measure("p-cap", occ, "capacity", "MAX")],
+                        # The legend shows field names and ignores custom labels, so these
+                        # are calculated fields with readable names (see CalculatedFields).
+                        "Values": [measure("p-peak", occ, "Peak count", "MAX"),
+                                   measure("p-cap", occ, "Room capacity", "MAX")],
                     }},
                     "SortConfiguration": {"CategorySort": [
-                        {"FieldSort": {"FieldId": "p-room", "Direction": "ASC"}}]}}}},
+                        {"FieldSort": {"FieldId": "p-room", "Direction": "ASC"}}]},
+                    "CategoryLabelOptions": labels(occ, ("p-room", "room_id", "Room")),
+                    "ValueLabelOptions": labels(occ, ("p-peak", "Peak count", "People"),
+                                                ("p-cap", "Room capacity", "People")),
+                    "Legend": {"Visibility": "VISIBLE", "Title": {"Visibility": "HIDDEN"}},
+                    "Tooltip": tooltip(("p-room", "Room"), ("p-peak", "Peak count"),
+                                       ("p-cap", "Room capacity"))}}},
             {"LineChartVisual": {"VisualId": "occ-trend", **title(
                 "Daily average people per room, with 14-day forecast",
-                "Door-counter rooms, weekdays 08:00-18:00 UK time"),
+                "Door-counter rooms, weekdays 08:00-18:00 UK time, from 21 Sep 2026; "
+                "the near-empty weeks before then would skew the forecast"),
                 "ChartConfiguration": {
                     "FieldWells": {"LineChartAggregatedFieldWells": {
                         "Category": [date_dim("l-day", occ, "local_date")],
                         "Values": [measure("l-val", occ, "people_count_core", "AVERAGE", ONE_DP)],
                         "Colors": []}},
                     "ForecastConfigurations": [{"ForecastProperties": {
-                        "PeriodsForward": 14, "PeriodsBackward": 0, "PredictionInterval": 90}}]}}},
+                        "PeriodsForward": 14, "PeriodsBackward": 0, "PredictionInterval": 90}}],
+                    "XAxisLabelOptions": labels(occ, ("l-day", "local_date", "Date")),
+                    "PrimaryYAxisLabelOptions": labels(occ, ("l-val", "people_count_core",
+                                                             "Average people per room")),
+                    "Tooltip": tooltip(("l-day", "Date"), ("l-val", "Average people per room"))}}},
             {"TableVisual": {"VisualId": "occ-presence", **title(
                 "Presence-sensor rooms",
                 "Sensors report when someone arrives or leaves, so this is the share of "
                 "reports showing someone present, not the share of time"),
-                "ChartConfiguration": {"FieldWells": {"TableAggregatedFieldWells": {
-                    "GroupBy": [dim("pr-room", occ, "room_id")],
-                    "Values": [measure("pr-n", occ, "presence", "COUNT"),
-                               measure("pr-occ", occ, "presence_pct")],
-                }}}}},
+                "ChartConfiguration": {
+                    "FieldWells": {"TableAggregatedFieldWells": {
+                        "GroupBy": [dim("pr-room", occ, "room_id")],
+                        "Values": [measure("pr-n", occ, "presence", "COUNT"),
+                                   measure("pr-occ", occ, "presence_pct", fmt=PCT)],
+                    }},
+                    "FieldOptions": {"SelectedFieldOptions": [
+                        {"FieldId": "pr-room", "CustomLabel": "Room"},
+                        {"FieldId": "pr-n", "CustomLabel": "Reports"},
+                        {"FieldId": "pr-occ", "CustomLabel": "Reports showing presence"},
+                    ]}}}},
         ],
         "Layouts": grid(("occ-coverage", 12, 6), ("occ-gauge", 12, 6), ("occ-floor", 12, 6),
                         ("occ-heat", 36, 12), ("occ-trend", 36, 10), ("occ-peak", 18, 14),
@@ -289,6 +343,9 @@ def dashboard(occupancy_arn, coverage_arn):
                            "sum(ifelse({in_service} = 'Yes', {expected_slots}, 0)) * 100"},
             {"DataSetIdentifier": occ, "Name": "presence_pct",
              "Expression": "avg({presence}) * 100"},
+            {"DataSetIdentifier": occ, "Name": "Peak count",
+             "Expression": "{people_count_scheduled}"},
+            {"DataSetIdentifier": occ, "Name": "Room capacity", "Expression": "{capacity}"},
         ],
         "FilterGroups": [
             *sheet_filters("occupancy", "f-date", "f-room", occ),
@@ -301,6 +358,27 @@ def dashboard(occupancy_arn, coverage_arn):
              "ScopeConfiguration": {"SelectedSheets": {"SheetVisualScopingConfigurations": [
                  {"SheetId": "occupancy", "Scope": "SELECTED_VISUALS",
                   "VisualIds": ["occ-presence"]}]}}},
+            # Presence rooms have no people count, so they would show as empty bars.
+            {"FilterGroupId": "fg-door", "CrossDataset": "SINGLE_DATASET", "Status": "ENABLED",
+             "Filters": [{"CategoryFilter": {
+                 "FilterId": "f-door", "Column": col(occ, "sensor_type"),
+                 "Configuration": {"FilterListConfiguration": {
+                     "MatchOperator": "CONTAINS", "CategoryValues": ["Door counter"]}}}}],
+             "ScopeConfiguration": {"SelectedSheets": {"SheetVisualScopingConfigurations": [
+                 {"SheetId": "occupancy", "Scope": "SELECTED_VISUALS",
+                  "VisualIds": ["occ-floor", "occ-type", "occ-peak"]}]}}},
+            # The forecast fits whatever the line shows; the weeks before 21 Sep are
+            # near-empty and would read as a rising trend.
+            {"FilterGroupId": "fg-trend-start", "CrossDataset": "SINGLE_DATASET", "Status": "ENABLED",
+             "Filters": [{"TimeRangeFilter": {
+                 "FilterId": "f-trend-start", "Column": col(occ, "local_date"),
+                 "IncludeMinimum": True, "IncludeMaximum": True, "NullOption": "NON_NULLS_ONLY",
+                 "TimeGranularity": "DAY",
+                 "RangeMinimumValue": {"StaticValue": "2026-09-21T00:00:00.000Z"},
+                 "RangeMaximumValue": {"StaticValue": "2027-12-31T00:00:00.000Z"}}}],
+             "ScopeConfiguration": {"SelectedSheets": {"SheetVisualScopingConfigurations": [
+                 {"SheetId": "occupancy", "Scope": "SELECTED_VISUALS",
+                  "VisualIds": ["occ-trend"]}]}}},
         ],
         "Sheets": [occupancy_sheet, quality_sheet],
     }
