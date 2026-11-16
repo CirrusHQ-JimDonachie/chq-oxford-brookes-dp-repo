@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Builds the QuickSight content that sits on top of AnalyticsStack's Athena data source:
-# the RLS rules dataset, the SPICE dataset over the curated table (with RLS attached and
-# an hourly refresh schedule), the two dashboards, and the Q Topic. Not CloudFormation-managed - run once per account after the stack
+# the RLS rules dataset; SPICE datasets over the curated tables (synthetic BMS readings,
+# and the Smart-Vis room occupancy readings and their daily coverage), each with RLS
+# attached and an hourly refresh schedule; the two environmental dashboards and the Room
+# Occupancy dashboard; and the Q Topic. Needs python3 for occupancy.py. Not CloudFormation-managed - run once per account after the stack
 # is deployed and SPICE capacity exists. Safe to re-run: each resource is created, or
 # updated if it already exists.
 #
@@ -53,7 +55,7 @@ qs create-group-membership --namespace default --group-name estates-all --member
 
 cat > "$TMP/rls-table.json" <<EOF
 {"rls":{"CustomSql":{"DataSourceArn":"$DS_ARN","Name":"rls_rules",
- "SqlQuery":"SELECT GroupName, room_id FROM (VALUES ('estates-all', CAST(NULL AS varchar)), ('estates-floor2', 'NHHB-2.14')) AS t(GroupName, room_id)",
+ "SqlQuery":"SELECT GroupName, room_id FROM (VALUES ('estates-all', CAST(NULL AS varchar)), ('estates-floor2', 'NHHB-2.14'), ('estates-floor2', 'NHHB.2.14')) AS t(GroupName, room_id)",
  "Columns":[{"Name":"GroupName","Type":"STRING"},{"Name":"room_id","Type":"STRING"}]}}}
 EOF
 upsert_dataset "$RLS_ID" --name "Building Data RLS rules" --import-mode SPICE \
@@ -80,11 +82,33 @@ upsert_dataset "$DATA_ID" --name "BMS environmental readings" --import-mode SPIC
 cat > "$TMP/schedule.json" <<EOF
 {"ScheduleId":"hourly","ScheduleFrequency":{"Interval":"HOURLY"},"RefreshType":"FULL_REFRESH"}
 EOF
-if qs describe-refresh-schedule --data-set-id "$DATA_ID" --schedule-id hourly >/dev/null 2>&1; then
-  qs update-refresh-schedule --data-set-id "$DATA_ID" --schedule "file://$TMP/schedule.json" --query Status --output text
-else
-  qs create-refresh-schedule --data-set-id "$DATA_ID" --schedule "file://$TMP/schedule.json" --query Status --output text
-fi
+hourly_refresh() {
+  if qs describe-refresh-schedule --data-set-id "$1" --schedule-id hourly >/dev/null 2>&1; then
+    qs update-refresh-schedule --data-set-id "$1" --schedule "file://$TMP/schedule.json" --query Status --output text
+  else
+    qs create-refresh-schedule --data-set-id "$1" --schedule "file://$TMP/schedule.json" --query Status --output text
+  fi
+}
+hourly_refresh "$DATA_ID"
+
+# --- Smart-Vis occupancy datasets -----------------------------------------------------
+# Custom SQL in quicksight/sql/, turned into API JSON (with the dashboard and the Q Topic)
+# by occupancy.py. room-occupancy has one row per reading; occupancy-coverage one row per
+# door-counter room per day, for the data-quality indicators SMARTviz asked for.
+OCC_ID="${PREFIX}-room-occupancy"
+COV_ID="${PREFIX}-occupancy-coverage"
+OCC_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${OCC_ID}"
+COV_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${COV_ID}"
+python3 -I "$(dirname "$0")/occupancy.py" "$TMP" "$DS_ARN" "$OCC_ARN" "$COV_ARN" \
+  "s3tablescatalog/$CURATED_BUCKET" "$CURATED_NS"
+upsert_dataset "$OCC_ID" --name "Room occupancy readings" --import-mode SPICE \
+  --physical-table-map "file://$TMP/occupancy-table.json" \
+  --row-level-permission-data-set "file://$TMP/rls.json"
+upsert_dataset "$COV_ID" --name "Occupancy data coverage" --import-mode SPICE \
+  --physical-table-map "file://$TMP/coverage-table.json" \
+  --row-level-permission-data-set "file://$TMP/rls.json"
+hourly_refresh "$OCC_ID"
+hourly_refresh "$COV_ID"
 
 # --- Dashboards ----------------------------------------------------------------------
 DATA_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${DATA_ID}"
@@ -133,31 +157,14 @@ upsert_dashboard() {
 }
 upsert_dashboard "${PREFIX}-environmental-overview" "Building Environmental Overview" "$TMP/overview.json"
 upsert_dashboard "${PREFIX}-room-status" "Room Environmental Status" "$TMP/status.json"
+# Smart-Vis occupancy: the SoW's occupancy heatmap, capacity gauge and zone breakdown,
+# a forecast, and a data-quality sheet with coverage.
+upsert_dashboard "${PREFIX}-room-occupancy" "Room Occupancy" "$TMP/occupancy-dashboard.json"
 
 # --- Q Topic (natural-language model) -------------------------------------------------
-# The SoW's one Q Topic. This models the one source onboarded so far; it is remodelled
-# (semantic types, sample questions) against real sources and the Customer's question set.
+# The SoW's one Q Topic, modelled on the Smart-Vis occupancy datasets (occupancy.py writes
+# topic.json). The topic id keeps its first name; the synthetic BMS data is no longer in it.
 TOPIC_ID="${PREFIX}-building-environmental"
-measure() {  # measure <column> <friendly name> <description> <synonyms json>
-  echo "{\"ColumnName\":\"$1\",\"ColumnFriendlyName\":\"$2\",\"ColumnDescription\":\"$3\",\"ColumnSynonyms\":$4,
-   \"ColumnDataRole\":\"MEASURE\",\"Aggregation\":\"AVERAGE\",\"NotAllowedAggregations\":[\"SUM\"],\"NonAdditive\":true,\"IsIncludedInTopic\":true}"
-}
-cat > "$TMP/topic.json" <<EOF
-{"Name":"Building Environmental","Description":"Room temperature and humidity readings from the building management system.",
- "UserExperienceVersion":"NEW_READER_EXPERIENCE",
- "DataSets":[{"DatasetArn":"$DATA_ARN","DatasetName":"BMS environmental readings",
-  "DatasetDescription":"One row per sensor reading: room, time, temperature and humidity.",
-  "DataAggregation":{"DatasetRowDateGranularity":"HOUR","DefaultDateColumnName":"reading_at"},
-  "Columns":[
-   {"ColumnName":"room_id","ColumnFriendlyName":"Room","ColumnDescription":"Room identifier, e.g. NHHB-2.14 (building, floor, room).",
-    "ColumnSynonyms":["room","space","location","room id","area"],"ColumnDataRole":"DIMENSION","IsIncludedInTopic":true},
-   {"ColumnName":"reading_at","ColumnFriendlyName":"Reading time","ColumnDescription":"When the sensor took the reading (UTC).",
-    "ColumnSynonyms":["time","date","when","timestamp","reading date"],"ColumnDataRole":"DIMENSION","TimeGranularity":"HOUR","IsIncludedInTopic":true},
-   $(measure temperature_c "Temperature (°C)" "Room air temperature in degrees Celsius." '["temperature","temp","how hot","how warm","how cold","degrees"]'),
-   $(measure humidity_pct "Humidity (%)" "Relative humidity, percent." '["humidity","relative humidity","RH","damp","moisture"]'),
-   {"ColumnName":"source_file","IsIncludedInTopic":false},
-   {"ColumnName":"ingested_at","IsIncludedInTopic":false}]}]}
-EOF
 if qs describe-topic --topic-id "$TOPIC_ID" >/dev/null 2>&1; then
   echo "updating topic $TOPIC_ID"
   qs update-topic --topic-id "$TOPIC_ID" --topic "file://$TMP/topic.json" --query Status --output text
@@ -172,8 +179,19 @@ qs update-topic-permissions --topic-id "$TOPIC_ID" --grant-permissions "[{\"Prin
   \"quicksight:CreateTopicRefreshSchedule\",\"quicksight:DeleteTopicRefreshSchedule\",\"quicksight:UpdateTopicRefreshSchedule\",
   \"quicksight:DescribeTopicPermissions\",\"quicksight:UpdateTopicPermissions\"]}]" \
   --query Status --output text
-# Re-index the Topic whenever SPICE refreshes, rather than on a separate clock.
-if [ "$(qs list-topic-refresh-schedules --topic-id "$TOPIC_ID" --query 'length(RefreshSchedules)' --output text 2>/dev/null)" = "0" ]; then
-  qs create-topic-refresh-schedule --topic-id "$TOPIC_ID" --dataset-arn "$DATA_ARN" \
-    --refresh-schedule '{"IsEnabled":true,"BasedOnSpiceSchedule":true}' --query Status --output text
-fi
+# Re-index the Topic whenever each dataset's SPICE refreshes, rather than on a separate
+# clock, and drop the schedule of any dataset no longer in the Topic.
+scheduled=$(qs list-topic-refresh-schedules --topic-id "$TOPIC_ID" --query 'RefreshSchedules[].DatasetArn' --output text 2>/dev/null || true)
+for arn in $scheduled; do
+  case " $OCC_ARN $COV_ARN " in
+    *" $arn "*) ;;
+    *) qs delete-topic-refresh-schedule --topic-id "$TOPIC_ID" --dataset-id "${arn##*/}" --query Status --output text ;;
+  esac
+done
+for arn in "$OCC_ARN" "$COV_ARN"; do
+  case " $scheduled " in
+    *" $arn "*) ;;
+    *) qs create-topic-refresh-schedule --topic-id "$TOPIC_ID" --dataset-arn "$arn" \
+         --refresh-schedule '{"IsEnabled":true,"BasedOnSpiceSchedule":true}' --query Status --output text ;;
+  esac
+done
