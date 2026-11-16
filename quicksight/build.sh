@@ -2,8 +2,8 @@
 # Builds the QuickSight content that sits on top of AnalyticsStack's Athena data source:
 # the RLS rules dataset; SPICE datasets over the curated tables (synthetic BMS readings,
 # and the Smart-Vis room occupancy readings and their daily coverage), each with RLS
-# attached and an hourly refresh schedule; the two environmental dashboards and the Room
-# Occupancy dashboard; and the Q Topic. Needs python3 for occupancy.py. Not CloudFormation-managed - run once per account after the stack
+# attached and an hourly refresh schedule; the Room Occupancy dashboard; and the Q Topic.
+# Needs python3 for occupancy.py. Not CloudFormation-managed - run once per account after the stack
 # is deployed and SPICE capacity exists. Safe to re-run: each resource is created, or
 # updated if it already exists.
 #
@@ -111,37 +111,9 @@ hourly_refresh "$OCC_ID"
 hourly_refresh "$COV_ID"
 
 # --- Dashboards ----------------------------------------------------------------------
-DATA_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${DATA_ID}"
-col() { echo "{\"DataSetIdentifier\":\"bms\",\"ColumnName\":\"$1\"}"; }
-avg() { echo "{\"NumericalMeasureField\":{\"FieldId\":\"$1\",\"Column\":$(col "$2"),\"AggregationFunction\":{\"SimpleNumericalAggregation\":\"AVERAGE\"}}}"; }
-title() { echo "{\"Visibility\":\"VISIBLE\",\"FormatText\":{\"PlainText\":\"$1\"}}"; }
-
-cat > "$TMP/overview.json" <<EOF
-{"DataSetIdentifierDeclarations":[{"Identifier":"bms","DataSetArn":"$DATA_ARN"}],
- "Sheets":[{"SheetId":"overview","Name":"Overview","Visuals":[
-  {"LineChartVisual":{"VisualId":"temp-trend","Title":$(title "Temperature trend (hourly average, °C)"),
-   "ChartConfiguration":{"FieldWells":{"LineChartAggregatedFieldWells":{
-    "Category":[{"DateDimensionField":{"FieldId":"trend-hour","Column":$(col reading_at),"DateGranularity":"HOUR"}}],
-    "Values":[$(avg trend-temp temperature_c)],
-    "Colors":[{"CategoricalDimensionField":{"FieldId":"trend-room","Column":$(col room_id)}}]}}}}},
-  {"TableVisual":{"VisualId":"latest-readings","Title":$(title "Latest readings"),
-   "ChartConfiguration":{"FieldWells":{"TableUnaggregatedFieldWells":{"Values":[
-     {"FieldId":"t-room","Column":$(col room_id)},{"FieldId":"t-at","Column":$(col reading_at)},
-     {"FieldId":"t-temp","Column":$(col temperature_c)},{"FieldId":"t-rh","Column":$(col humidity_pct)}]}},
-    "SortConfiguration":{"RowSort":[{"FieldSort":{"FieldId":"t-at","Direction":"DESC"}}]}}}}]}]}
-EOF
-
-cat > "$TMP/status.json" <<EOF
-{"DataSetIdentifierDeclarations":[{"Identifier":"bms","DataSetArn":"$DATA_ARN"}],
- "Sheets":[{"SheetId":"status","Name":"Room status","Visuals":[
-  {"KPIVisual":{"VisualId":"avg-temp","Title":$(title "Average temperature (°C)"),
-   "ChartConfiguration":{"FieldWells":{"Values":[$(avg kpi-temp temperature_c)]}}}},
-  {"BarChartVisual":{"VisualId":"room-temp","Title":$(title "Average temperature by room (°C)"),
-   "ChartConfiguration":{"Orientation":"HORIZONTAL","FieldWells":{"BarChartAggregatedFieldWells":{
-    "Category":[{"CategoricalDimensionField":{"FieldId":"bar-room","Column":$(col room_id)}}],
-    "Values":[$(avg bar-temp temperature_c)]}}}}}]}]}
-EOF
-
+# The two environmental dashboards on the synthetic BMS readings (Building Environmental
+# Overview, Room Environmental Status) were removed on 2026-11-16; the BMS dataset stays
+# for when real BMS data arrives.
 upsert_dashboard() {
   local id=$1 name=$2 def=$3
   if qs describe-dashboard --dashboard-id "$id" >/dev/null 2>&1; then
@@ -155,8 +127,6 @@ upsert_dashboard() {
       --permissions "file://$TMP/dashboard-perms.json" --query CreationStatus --output text
   fi
 }
-upsert_dashboard "${PREFIX}-environmental-overview" "Building Environmental Overview" "$TMP/overview.json"
-upsert_dashboard "${PREFIX}-room-status" "Room Environmental Status" "$TMP/status.json"
 # Smart-Vis occupancy: the SoW's occupancy heatmap, capacity gauge and zone breakdown,
 # a forecast, and a data-quality sheet with coverage.
 upsert_dashboard "${PREFIX}-room-occupancy" "Room Occupancy" "$TMP/occupancy-dashboard.json"
