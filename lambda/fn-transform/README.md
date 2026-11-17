@@ -220,10 +220,13 @@ them matter more than the rest:
   its depth. S3 invokes asynchronously, so there is no caller to return an error
   to and a file that fails every retry is otherwise lost with no signal.
 
-At 1 GB of memory a file is held as raw records, mapped records and one Arrow
-table at once. Below that the append is the first thing to fail, and since
-Lambda CPU scales with memory a smaller setting also lengthens the mapping pass
-the timeout was sized against.
+A file is held as raw records, mapped records and one Arrow table at once.
+1 GB is the floor for a 200,000-row file: below that the append is the first
+thing to fail, and since Lambda CPU scales with memory a smaller setting also
+lengthens the mapping pass the timeout was sized against. The deployed setting
+is 3 GB, because Oxford Brookes' second Wi-Fi sample (440,936 rows, 58 MB) ran
+out of memory at 1 GB on 2026-11-16. Larger exports are better sent as one file
+per day.
 
 ## Permissions
 

@@ -16,10 +16,11 @@ with `NO_MAPPING_CONFIG` is not retried on its own: re-drop it.
 | `aruba-ap_counts.json` | `raw/aruba/ap_counts/` | `building_data.wifi_client_sessions` | Draft, awaiting Oxford Brookes sign-off |
 | `reference-rooms.json` | `raw/reference/rooms/` | `building_data.rooms` | Loaded 2026-10-28 (207 rooms) |
 | `smartvis-occupancy.json` | `raw/smartvis/occupancy/` | `building_data.smartvis_occupancy` | Draft; the 2026-09-01 to 2026-11-12 export maps in full locally, awaiting Oxford Brookes sign-off |
+| `timeedit-teaching.json` | `raw/timeedit/teaching/` | `building_data.timetable_teaching` | Draft; loaded as a trial (`trial_timetable_teaching`) 2026-11-17 |
+| `timeedit-non_teaching.json` | `raw/timeedit/non_teaching/` | `building_data.timetable_non_teaching` | Draft; loaded as a trial (`trial_timetable_non_teaching`) 2026-11-17 |
 
-Load into the config table the transform actually reads - the account still
-holds config tables from failed first creates, so take the name from the
-function, not from a name search:
+Load into the config table the transform actually reads; take the name from
+the function, not from a name search:
 
 ```bash
 CONFIG_TABLE=$(aws lambda get-function-configuration --function-name building-data-dev-transform \
@@ -108,5 +109,24 @@ Known in the 2026-09-01 to 2026-11-12 export:
   (NHHB 1.15 has nothing from 25 September to 18 October).
 - Counts above the stated capacity occur (NHHB 1.09 peaks at 51 against 26), so
   capacity is stored but not used as a validation limit.
+
+## TimeEdit bookings
+
+TimeEdit exports bookings for the whole campus, one file per booking category,
+in two layouts: teaching (module, module group, reservation group, school) and
+everything else (purpose), which covers the "other" and "staff room" exports.
+Each layout has its own folder and config. A booking held in several rooms has
+one row per room with the same `Id`, so a row is identified by `booking_id` and
+`room`, not by `booking_id` alone.
+
+Dates (`dd/mm/yyyy`) and times (`HH:MM`, UK local) are kept as text: the engine
+reads only ISO 8601 or epoch timestamps, so queries parse them. Room codes
+include non-rooms (`Online`, `Office`, `00_NoRoom`) and differ in case from
+Smart-Vis for split rooms (`NHHB.2.03a` against `NHHB.2.03A`); compare in upper
+case.
+
+The "academic" export (advising appointments) is not mapped: its `Module`
+column holds staff or student numbers (`P0095047Advising2026`), which are
+personal data.
 
 The `bms/environmental` config used by the smoke test is in `DEPLOYMENT.md`.

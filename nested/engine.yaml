@@ -464,9 +464,11 @@ Resources:
       PackageType: Image
       Architectures:
         - x86_64
-      # A 200000-row file is held as raw records, mapped records and one Arrow
-      # table at the same time, and the timeout was sized at this memory setting.
-      MemorySize: 1024
+      # A file is held as raw records, mapped records and one Arrow table at the
+      # same time. 1024 MB covers 200000 rows; a 440936-row (58 MB) Wi-Fi sample
+      # ran out of memory at 1024 MB on 2026-11-16, so this is 3 GB, which also
+      # triples the CPU the mapping pass gets.
+      MemorySize: 3072
       Timeout: 300
       Role: !GetAtt TransformFunctionRole.Arn
       KmsKeyArn: !Ref KmsKeyArn

@@ -1,0 +1,22 @@
+{
+  "pk": {"S": "config#timeedit#non_teaching"},
+  "sk": {"S": "mapping"},
+  "input_format": {"S": "csv"},
+  "has_header": {"BOOL": true},
+  "fields": {"L": [
+    {"M": {"from": {"S": "Id"}, "to": {"S": "booking_id"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Day"}, "to": {"S": "weekday"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Start Time"}, "to": {"S": "start_time"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "End Time"}, "to": {"S": "end_time"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Length"}, "to": {"S": "length"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Date"}, "to": {"S": "booking_date"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Room"}, "to": {"S": "room"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Faculty/Directorate"}, "to": {"S": "faculty"}, "type": {"S": "string"}}},
+    {"M": {"from": {"S": "Purpose"}, "to": {"S": "purpose"}, "type": {"S": "string"}}}
+  ]},
+  "validation": {"M": {
+    "required": {"L": [{"S": "booking_id"}, {"S": "booking_date"}, {"S": "start_time"}, {"S": "room"}]}
+  }},
+  "entity": {"M": {"type": {"S": "booking_room"}, "key_field": {"S": "room"}}},
+  "target_table": {"S": "building_data.timetable_non_teaching"}
+}
