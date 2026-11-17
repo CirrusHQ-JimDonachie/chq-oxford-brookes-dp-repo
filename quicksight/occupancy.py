@@ -6,12 +6,13 @@ build.sh calls this, then passes the files to the QuickSight API. It writes:
   (custom SQL from sql/, over the curated catalog);
 - booked-table.json, sessions-table.json: the booked-against-actual datasets, joining
   the TimeEdit timetable to the door counters;
+- wifi-table.json: Wi-Fi devices against door counts per room and hour (trial Wi-Fi);
 - occupancy-dashboard.json: the Room Occupancy dashboard;
 - topic.json: the Q Topic, modelled on both datasets.
 
     python3 quicksight/occupancy.py <out dir> <data source arn> <occupancy dataset arn> \
         <coverage dataset arn> <booked dataset arn> <sessions dataset arn> \
-        <curated catalog> <namespace>
+        <wifi dataset arn> <curated catalog> <namespace>
 """
 
 import json
@@ -55,6 +56,12 @@ SESSION_COLUMNS = [
     ("booked_minutes", "INTEGER"), ("booked_slots", "INTEGER"), ("observed_slots", "INTEGER"),
     ("peak_people", "DECIMAL"), ("avg_people", "DECIMAL"), ("capacity", "INTEGER"),
     ("peak_pct_capacity", "DECIMAL"), ("avg_pct_capacity", "DECIMAL"), ("outcome", "STRING"),
+]
+WIFI_COLUMNS = [
+    ("room_id", "STRING"), ("floor", "STRING"), ("local_date", "DATETIME"), ("weekday", "STRING"),
+    ("hour_of_day", "INTEGER"), ("core_hours", "STRING"), ("slots", "INTEGER"),
+    ("people_sum", "DECIMAL"), ("devices_sum", "INTEGER"), ("people_in_use_slots", "INTEGER"),
+    ("wifi_in_use_slots", "INTEGER"), ("agree_slots", "INTEGER"),
 ]
 # TimeEdit tables the booked-vs-actual SQL reads. The trial tables until Oxford Brookes
 # sign off the format; then building_data.timetable_teaching / timetable_non_teaching.
@@ -183,7 +190,101 @@ def sheet_filters(sheet_id, date_id, room_id, ds):
     ]
 
 
-def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn):
+PEOPLE = "Door count (people)"
+DEVICES = "Wi-Fi devices"
+TRIAL = "Trial: Aruba sample, 21 Sep to 6 Nov, pending Oxford Brookes' DPO sign-off."
+
+
+def wifi_sheet(wvd):
+    """Wi-Fi devices against door counts, per room. Calculated fields carry readable
+    names because legends show field names."""
+    def pair(prefix):
+        return [measure(f"{prefix}-p", wvd, PEOPLE, fmt=ONE_DP),
+                measure(f"{prefix}-d", wvd, DEVICES, fmt=ONE_DP)]
+
+    def two_line(visual_id, text, subtitle, category, axis_label):
+        return {"LineChartVisual": {"VisualId": visual_id, **title(text, subtitle),
+            "ChartConfiguration": {
+                "FieldWells": {"LineChartAggregatedFieldWells": {
+                    "Category": [category], "Values": pair(visual_id), "Colors": []}},
+                "XAxisLabelOptions": labels(wvd, (category[next(iter(category))]["FieldId"],
+                                                  category[next(iter(category))]["Column"]["ColumnName"],
+                                                  axis_label)),
+                "PrimaryYAxisLabelOptions": labels(wvd, (f"{visual_id}-p", PEOPLE, "Average per room")),
+                "Legend": {"Visibility": "VISIBLE", "Title": {"Visibility": "HIDDEN"}},
+                "Tooltip": tooltip((f"{visual_id}-p", PEOPLE), (f"{visual_id}-d", DEVICES))}}}
+
+    return {
+        "SheetId": "wifi", "Name": "Wi-Fi vs door counts",
+        "FilterControls": [
+            {"DateTimePicker": {"FilterControlId": "ctl-date-w", "Title": "Dates",
+                                "SourceFilterId": "f-date-w", "Type": "DATE_RANGE"}},
+            {"Dropdown": {"FilterControlId": "ctl-room-w", "Title": "Room",
+                          "SourceFilterId": "f-room-w", "Type": "MULTI_SELECT"}},
+        ],
+        "Visuals": [
+            kpi("w-people", "Door count", measure("w-people-v", wvd, PEOPLE, fmt=ONE_DP),
+                "Average people per room, weekdays 08:00-18:00"),
+            kpi("w-devices", "Wi-Fi devices", measure("w-devices-v", wvd, DEVICES, fmt=ONE_DP),
+                "Average devices on each room's access points, weekdays 08:00-18:00. " + TRIAL),
+            kpi("w-ratio", "Devices per person", measure("w-ratio-v", wvd, "devices_per_person",
+                                                          fmt=number_format(2)),
+                "Wi-Fi devices divided by door-counted people, weekdays 08:00-18:00"),
+            kpi("w-agree", "Agree on whether the room is in use",
+                measure("w-agree-v", wvd, "wifi_agreement_pct", fmt=PCT),
+                "Five-minute readings where both or neither show someone, weekdays 08:00-18:00"),
+            two_line("w-day", "Door count and Wi-Fi devices by day",
+                     "Average per room, weekdays 08:00-18:00. " + TRIAL,
+                     date_dim("w-day-x", wvd, "local_date"), "Date"),
+            two_line("w-hour", "Door count and Wi-Fi devices by hour of the day",
+                     "Average per room, Monday to Friday, UK local time",
+                     {"NumericalDimensionField": {"FieldId": "w-hour-x",
+                                                  "Column": col(wvd, "hour_of_day")}},
+                     "Hour starting"),
+            {"BarChartVisual": {"VisualId": "w-rooms", **title(
+                "Door count and Wi-Fi devices by room",
+                "Average per five-minute reading, weekdays 08:00-18:00; rooms with an access point in the room list"),
+                "ChartConfiguration": {"Orientation": "HORIZONTAL", "BarsArrangement": "CLUSTERED",
+                    "FieldWells": {"BarChartAggregatedFieldWells": {
+                        # Bars colour their measures in the opposite order to the lines, so
+                        # devices go first here to keep each measure's colour the same.
+                        "Category": [dim("w-rooms-r", wvd, "room_id")],
+                        "Values": pair("w-rooms")[::-1]}},
+                    "SortConfiguration": {"CategorySort": [
+                        {"FieldSort": {"FieldId": "w-rooms-r", "Direction": "ASC"}}]},
+                    "CategoryLabelOptions": labels(wvd, ("w-rooms-r", "room_id", "Room")),
+                    "ValueLabelOptions": labels(wvd, ("w-rooms-p", PEOPLE, "Average per reading")),
+                    "Legend": {"Visibility": "VISIBLE", "Title": {"Visibility": "HIDDEN"}},
+                    "Tooltip": tooltip(("w-rooms-r", "Room"), ("w-rooms-p", PEOPLE),
+                                       ("w-rooms-d", DEVICES))}}},
+            {"TableVisual": {"VisualId": "w-table", **title(
+                "How closely Wi-Fi follows the door counter, by room",
+                "Weekdays 08:00-18:00. Few devices in a full room, or many in an empty one, "
+                "suggests the access point serves other space or the room list maps it wrongly"),
+                "ChartConfiguration": {
+                    "FieldWells": {"TableAggregatedFieldWells": {
+                        "GroupBy": [dim("wt-room", wvd, "room_id")],
+                        "Values": [measure("wt-p", wvd, PEOPLE, fmt=ONE_DP),
+                                   measure("wt-d", wvd, DEVICES, fmt=ONE_DP),
+                                   measure("wt-r", wvd, "devices_per_person", fmt=number_format(2)),
+                                   measure("wt-a", wvd, "wifi_agreement_pct", fmt=PCT)]}},
+                    "SortConfiguration": {"RowSort": [
+                        {"FieldSort": {"FieldId": "wt-a", "Direction": "ASC"}}]},
+                    "FieldOptions": {"SelectedFieldOptions": [
+                        {"FieldId": "wt-room", "CustomLabel": "Room"},
+                        {"FieldId": "wt-p", "CustomLabel": "Door count"},
+                        {"FieldId": "wt-d", "CustomLabel": "Wi-Fi devices"},
+                        {"FieldId": "wt-r", "CustomLabel": "Devices per person"},
+                        {"FieldId": "wt-a", "CustomLabel": "Agree on in use"},
+                    ]}}}},
+        ],
+        "Layouts": grid(("w-people", 9, 6), ("w-devices", 9, 6), ("w-ratio", 9, 6),
+                        ("w-agree", 9, 6), ("w-day", 36, 10), ("w-hour", 18, 12),
+                        ("w-rooms", 18, 12), ("w-table", 36, 12)),
+    }
+
+
+def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_arn):
     occ, cov = "occ", "cov"
     coverage_kpi = measure("cov-pct", cov, "coverage_pct", fmt=PCT)
 
@@ -366,7 +467,7 @@ def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn):
 
     # --- Booked vs actual: TimeEdit bookings against the door counters -------------
     # Calculated fields carry readable names because legends show field names.
-    bva, ses = "bva", "ses"
+    bva, ses, wvd = "bva", "ses", "wvd"
     used_booked = "Booked time in use"
     used_unbooked = "Unbooked time in use"
     booked_sheet = {
@@ -510,6 +611,7 @@ def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn):
             {"Identifier": cov, "DataSetArn": coverage_arn},
             {"Identifier": bva, "DataSetArn": booked_arn},
             {"Identifier": ses, "DataSetArn": session_arn},
+            {"Identifier": wvd, "DataSetArn": wifi_arn},
         ],
         "CalculatedFields": [
             {"DataSetIdentifier": cov, "Name": "coverage_pct", "Expression": COVERAGE_EXPRESSION},
@@ -530,6 +632,14 @@ def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn):
                            "(sum({booked_used_slots}) + sum({unbooked_used_slots})) * 100"},
             {"DataSetIdentifier": bva, "Name": "booked_time_pct",
              "Expression": "sum({booked_slots}) / sum({observed_slots}) * 100"},
+            {"DataSetIdentifier": wvd, "Name": PEOPLE,
+             "Expression": "sum({people_sum}) / sum({slots})"},
+            {"DataSetIdentifier": wvd, "Name": DEVICES,
+             "Expression": "sum({devices_sum}) / sum({slots})"},
+            {"DataSetIdentifier": wvd, "Name": "devices_per_person",
+             "Expression": "sum({devices_sum}) / sum({people_sum})"},
+            {"DataSetIdentifier": wvd, "Name": "wifi_agreement_pct",
+             "Expression": "sum({agree_slots}) / sum({slots}) * 100"},
             {"DataSetIdentifier": ses, "Name": "empty_bookings_pct",
              "Expression": "sum(ifelse({outcome} = 'Empty', 1, 0)) / "
                            "sum(ifelse({outcome} = 'No sensor data', 0, 1)) * 100"},
@@ -540,6 +650,26 @@ def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn):
             *sheet_filters("booked", "f-date-b", "f-room-b", bva),
             core_only,
             outcome_filter,
+            *sheet_filters("wifi", "f-date-w", "f-room-w", wvd),
+            # Averages over every hour would be mostly empty nights; the hour-of-day
+            # line shows all hours, Monday to Friday.
+            {"FilterGroupId": "fg-wifi-core", "CrossDataset": "SINGLE_DATASET", "Status": "ENABLED",
+             "Filters": [{"CategoryFilter": {
+                 "FilterId": "f-wifi-core", "Column": col(wvd, "core_hours"),
+                 "Configuration": {"FilterListConfiguration": {
+                     "MatchOperator": "CONTAINS", "CategoryValues": ["Yes"]}}}}],
+             "ScopeConfiguration": {"SelectedSheets": {"SheetVisualScopingConfigurations": [
+                 {"SheetId": "wifi", "Scope": "SELECTED_VISUALS",
+                  "VisualIds": ["w-people", "w-devices", "w-ratio", "w-agree", "w-day",
+                                "w-rooms", "w-table"]}]}}},
+            {"FilterGroupId": "fg-wifi-weekdays", "CrossDataset": "SINGLE_DATASET", "Status": "ENABLED",
+             "Filters": [{"CategoryFilter": {
+                 "FilterId": "f-wifi-weekdays", "Column": col(wvd, "weekday"),
+                 "Configuration": {"FilterListConfiguration": {
+                     "MatchOperator": "CONTAINS",
+                     "CategoryValues": ["1 Mon", "2 Tue", "3 Wed", "4 Thu", "5 Fri"]}}}}],
+             "ScopeConfiguration": {"SelectedSheets": {"SheetVisualScopingConfigurations": [
+                 {"SheetId": "wifi", "Scope": "SELECTED_VISUALS", "VisualIds": ["w-hour"]}]}}},
             {"FilterGroupId": "fg-presence", "CrossDataset": "SINGLE_DATASET", "Status": "ENABLED",
              "Filters": [{"CategoryFilter": {
                  "FilterId": "f-presence", "Column": col(occ, "sensor_type"),
@@ -570,7 +700,7 @@ def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn):
                  {"SheetId": "occupancy", "Scope": "SELECTED_VISUALS",
                   "VisualIds": ["occ-trend"]}]}}},
         ],
-        "Sheets": [occupancy_sheet, booked_sheet, quality_sheet],
+        "Sheets": [occupancy_sheet, booked_sheet, wifi_sheet(wvd), quality_sheet],
     }
 
 
@@ -696,7 +826,7 @@ def topic(occupancy_arn, coverage_arn):
 
 
 def main(out, data_source_arn, occupancy_arn, coverage_arn, booked_arn, session_arn,
-         catalog, namespace):
+         wifi_arn, catalog, namespace):
     out = Path(out)
     curated = f'"{catalog}"."{namespace}"'
     files = {
@@ -708,7 +838,10 @@ def main(out, data_source_arn, occupancy_arn, coverage_arn, booked_arn, session_
             "booked_vs_actual", "booked_vs_actual.sql", BOOKED_COLUMNS, data_source_arn, curated),
         "sessions-table.json": physical_table(
             "booking_sessions", "booking_sessions.sql", SESSION_COLUMNS, data_source_arn, curated),
-        "occupancy-dashboard.json": dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn),
+        "wifi-table.json": physical_table(
+            "wifi_vs_door", "wifi_vs_door.sql", WIFI_COLUMNS, data_source_arn, curated),
+        "occupancy-dashboard.json": dashboard(occupancy_arn, coverage_arn, booked_arn,
+                                              session_arn, wifi_arn),
         "topic.json": topic(occupancy_arn, coverage_arn),
     }
     for name, body in files.items():
