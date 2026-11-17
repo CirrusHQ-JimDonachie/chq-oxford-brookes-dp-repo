@@ -4,11 +4,14 @@ build.sh calls this, then passes the files to the QuickSight API. It writes:
 
 - occupancy-table.json, coverage-table.json: the two datasets' physical tables
   (custom SQL from sql/, over the curated catalog);
+- booked-table.json, sessions-table.json: the booked-against-actual datasets, joining
+  the TimeEdit timetable to the door counters;
 - occupancy-dashboard.json: the Room Occupancy dashboard;
 - topic.json: the Q Topic, modelled on both datasets.
 
     python3 quicksight/occupancy.py <out dir> <data source arn> <occupancy dataset arn> \
-        <coverage dataset arn> <curated catalog> <namespace>
+        <coverage dataset arn> <booked dataset arn> <sessions dataset arn> \
+        <curated catalog> <namespace>
 """
 
 import json
@@ -36,6 +39,30 @@ COVERAGE_COLUMNS = [
     ("midnight_resets", "INTEGER"), ("corrections", "INTEGER"),
 ]
 
+BOOKED_COLUMNS = [
+    ("room_id", "STRING"), ("floor", "STRING"), ("room_type", "STRING"), ("capacity", "INTEGER"),
+    ("local_date", "DATETIME"), ("weekday", "STRING"), ("hour_of_day", "INTEGER"),
+    ("core_hours", "STRING"), ("observed_slots", "INTEGER"), ("booked_slots", "INTEGER"),
+    ("booked_used_slots", "INTEGER"), ("unbooked_slots", "INTEGER"),
+    ("unbooked_used_slots", "INTEGER"), ("booked_people_sum", "DECIMAL"),
+]
+SESSION_COLUMNS = [
+    ("booking_type", "STRING"), ("purpose", "STRING"), ("booking_id", "STRING"),
+    ("room_id", "STRING"), ("floor", "STRING"), ("module", "STRING"), ("module_group", "STRING"),
+    ("faculty", "STRING"), ("school", "STRING"), ("local_date", "DATETIME"),
+    ("start_at", "DATETIME"), ("end_at", "DATETIME"), ("start_time", "STRING"),
+    ("weekday", "STRING"), ("hour_of_day", "INTEGER"), ("core_hours", "STRING"),
+    ("booked_minutes", "INTEGER"), ("booked_slots", "INTEGER"), ("observed_slots", "INTEGER"),
+    ("peak_people", "DECIMAL"), ("avg_people", "DECIMAL"), ("capacity", "INTEGER"),
+    ("peak_pct_capacity", "DECIMAL"), ("avg_pct_capacity", "DECIMAL"), ("outcome", "STRING"),
+]
+# TimeEdit tables the booked-vs-actual SQL reads. The trial tables until Oxford Brookes
+# sign off the format; then building_data.timetable_teaching / timetable_non_teaching.
+TIMETABLE_TABLES = {
+    "{teaching}": '"trial_timetable_teaching"',
+    "{non_teaching}": '"trial_timetable_non_teaching"',
+}
+
 COVERAGE_EXPRESSION = "sum({observed_slots}) / sum({expected_slots}) * 100"
 CAVEAT = (
     "Derived from available sensor observations; gaps and system-generated "
@@ -45,6 +72,8 @@ CAVEAT = (
 
 def physical_table(name, sql_file, columns, data_source_arn, curated):
     sql = (HERE / "sql" / sql_file).read_text().replace("{curated}", curated)
+    for placeholder, table in TIMETABLE_TABLES.items():
+        sql = sql.replace(placeholder, table)
     # The map key is an id (letters, digits, hyphens); the name may have underscores.
     return {name.replace("_", "-"): {"CustomSql": {
         "DataSourceArn": data_source_arn, "Name": name, "SqlQuery": sql,
@@ -154,7 +183,7 @@ def sheet_filters(sheet_id, date_id, room_id, ds):
     ]
 
 
-def dashboard(occupancy_arn, coverage_arn):
+def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn):
     occ, cov = "occ", "cov"
     coverage_kpi = measure("cov-pct", cov, "coverage_pct", fmt=PCT)
 
@@ -335,10 +364,152 @@ def dashboard(occupancy_arn, coverage_arn):
                         ("q-corr", 9, 6), ("q-rooms", 36, 14), ("q-trend", 36, 10)),
     }
 
+    # --- Booked vs actual: TimeEdit bookings against the door counters -------------
+    # Calculated fields carry readable names because legends show field names.
+    bva, ses = "bva", "ses"
+    used_booked = "Booked time in use"
+    used_unbooked = "Unbooked time in use"
+    booked_sheet = {
+        "SheetId": "booked", "Name": "Booked vs actual",
+        "FilterControls": [
+            {"DateTimePicker": {"FilterControlId": "ctl-date-b", "Title": "Dates",
+                                "SourceFilterId": "f-date-b", "Type": "DATE_RANGE"}},
+            {"Dropdown": {"FilterControlId": "ctl-room-b", "Title": "Room",
+                          "SourceFilterId": "f-room-b", "Type": "MULTI_SELECT"}},
+            {"Dropdown": {"FilterControlId": "ctl-outcome", "Title": "Booking outcome",
+                          "SourceFilterId": "f-outcome", "Type": "MULTI_SELECT"}},
+        ],
+        "Visuals": [
+            kpi("b-empty", "Bookings with nobody counted",
+                measure("b-empty-v", ses, "empty_bookings_pct", fmt=PCT),
+                "Of bookings with sensor data for at least half their length"),
+            kpi("b-used", "Booked time in use",
+                measure("b-used-v", bva, used_booked, fmt=PCT),
+                "Share of booked five-minute readings counting anyone; weekdays 08:00-18:00"),
+            kpi("b-unbooked", "Occupied time with no booking",
+                measure("b-unb-v", bva, "occupied_unbooked_pct", fmt=PCT),
+                "Share of readings counting anyone that fall outside a booking; weekdays 08:00-18:00"),
+            kpi("b-booked", "Time booked",
+                measure("b-bk-v", bva, "booked_time_pct", fmt=PCT),
+                "Share of readings inside a booking; weekdays 08:00-18:00"),
+            {"BarChartVisual": {"VisualId": "b-rooms", **title(
+                "Booked and unbooked time in use, by room",
+                "Weekdays 08:00-18:00; rooms in the TimeEdit timetable with a door counter"),
+                "ChartConfiguration": {"Orientation": "HORIZONTAL", "BarsArrangement": "CLUSTERED",
+                    "FieldWells": {"BarChartAggregatedFieldWells": {
+                        "Category": [dim("br-room", bva, "room_id")],
+                        "Values": [measure("br-b", bva, used_booked, fmt=PCT),
+                                   measure("br-u", bva, used_unbooked, fmt=PCT)],
+                    }},
+                    "SortConfiguration": {"CategorySort": [
+                        {"FieldSort": {"FieldId": "br-room", "Direction": "ASC"}}]},
+                    "CategoryLabelOptions": labels(bva, ("br-room", "room_id", "Room")),
+                    "ValueLabelOptions": labels(bva, ("br-b", used_booked, "% of readings counting anyone")),
+                    "Legend": {"Visibility": "VISIBLE", "Title": {"Visibility": "HIDDEN"}},
+                    "Tooltip": tooltip(("br-room", "Room"), ("br-b", used_booked),
+                                       ("br-u", used_unbooked))}}},
+            {"BarChartVisual": {"VisualId": "b-outcomes", **title(
+                "Bookings by room and outcome",
+                "Used: anyone counted. Empty: nobody counted. No sensor data: readings for under half the booking"),
+                "ChartConfiguration": {"Orientation": "HORIZONTAL", "BarsArrangement": "STACKED",
+                    "FieldWells": {"BarChartAggregatedFieldWells": {
+                        "Category": [dim("bo-room", ses, "room_id")],
+                        "Values": [{"CategoricalMeasureField": {
+                            "FieldId": "bo-n", "Column": col(ses, "booking_id"),
+                            "AggregationFunction": "COUNT"}}],
+                        "Colors": [dim("bo-out", ses, "outcome")],
+                    }},
+                    "SortConfiguration": {"CategorySort": [
+                        {"FieldSort": {"FieldId": "bo-room", "Direction": "ASC"}}]},
+                    "CategoryLabelOptions": labels(ses, ("bo-room", "room_id", "Room")),
+                    "ValueLabelOptions": labels(ses, ("bo-n", "booking_id", "Bookings")),
+                    "ColorLabelOptions": labels(ses, ("bo-out", "outcome", "Outcome")),
+                    "Tooltip": tooltip(("bo-room", "Room"), ("bo-out", "Outcome"),
+                                       ("bo-n", "Bookings"))}}},
+            {"HeatMapVisual": {"VisualId": "b-heat", **title(
+                "Unbooked time in use, by weekday and hour",
+                "Share of unbooked readings counting anyone, timetabled rooms, UK local time"),
+                "ChartConfiguration": {
+                    "FieldWells": {"HeatMapAggregatedFieldWells": {
+                        "Rows": [dim("bh-day", bva, "weekday")],
+                        "Columns": [{"NumericalDimensionField": {
+                            "FieldId": "bh-hour", "Column": col(bva, "hour_of_day")}}],
+                        "Values": [measure("bh-val", bva, used_unbooked, fmt=PCT)],
+                    }},
+                    "RowLabelOptions": labels(bva, ("bh-day", "weekday", "Weekday")),
+                    "ColumnLabelOptions": labels(bva, ("bh-hour", "hour_of_day", "Hour starting")),
+                    "Legend": {"Visibility": "VISIBLE", "Title": {
+                        "Visibility": "VISIBLE", "CustomLabel": "% in use"}},
+                    "Tooltip": tooltip(("bh-day", "Weekday"), ("bh-hour", "Hour starting"),
+                                       ("bh-val", used_unbooked))}}},
+            {"TableVisual": {"VisualId": "b-table", **title(
+                "Bookings and what the door counter saw",
+                "One row per booking per room; use the Booking outcome control to list the empty ones"),
+                "ChartConfiguration": {
+                    "FieldWells": {"TableUnaggregatedFieldWells": {"Values": [
+                        {"FieldId": "bt-start", "Column": col(ses, "start_at")},
+                        {"FieldId": "bt-room", "Column": col(ses, "room_id")},
+                        {"FieldId": "bt-type", "Column": col(ses, "booking_type")},
+                        {"FieldId": "bt-purpose", "Column": col(ses, "purpose")},
+                        # Non-teaching bookings have no module: show a dash, not "null".
+                        {"FieldId": "bt-module", "Column": col(ses, "module"),
+                         "FormatConfiguration": {"StringFormatConfiguration": {
+                             "NullValueFormatConfiguration": {"NullString": "-"}}}},
+                        {"FieldId": "bt-min", "Column": col(ses, "booked_minutes")},
+                        {"FieldId": "bt-cap", "Column": col(ses, "capacity")},
+                        {"FieldId": "bt-peak", "Column": col(ses, "peak_people")},
+                        {"FieldId": "bt-avg", "Column": col(ses, "avg_people"),
+                         "FormatConfiguration": {"NumberFormatConfiguration": ONE_DP}},
+                        {"FieldId": "bt-out", "Column": col(ses, "outcome")},
+                    ]}},
+                    "SortConfiguration": {"RowSort": [
+                        {"FieldSort": {"FieldId": "bt-start", "Direction": "DESC"}}]},
+                    "FieldOptions": {"SelectedFieldOptions": [
+                        {"FieldId": "bt-start", "CustomLabel": "Start"},
+                        {"FieldId": "bt-room", "CustomLabel": "Room"},
+                        {"FieldId": "bt-type", "CustomLabel": "Type"},
+                        {"FieldId": "bt-purpose", "CustomLabel": "Purpose"},
+                        {"FieldId": "bt-module", "CustomLabel": "Module"},
+                        {"FieldId": "bt-min", "CustomLabel": "Minutes"},
+                        {"FieldId": "bt-cap", "CustomLabel": "Capacity"},
+                        {"FieldId": "bt-peak", "CustomLabel": "Peak count"},
+                        {"FieldId": "bt-avg", "CustomLabel": "Average count"},
+                        {"FieldId": "bt-out", "CustomLabel": "Outcome"},
+                    ]}}}},
+        ],
+        "Layouts": grid(("b-empty", 9, 6), ("b-used", 9, 6), ("b-unbooked", 9, 6),
+                        ("b-booked", 9, 6), ("b-rooms", 18, 14), ("b-outcomes", 18, 14),
+                        ("b-heat", 36, 10), ("b-table", 36, 14)),
+    }
+    # Unbooked use only means something while rooms are in demand, so the hourly
+    # booked-vs-actual visuals are limited to weekdays 08:00-18:00, except the heatmap,
+    # which shows every hour so evening use is visible.
+    core_only = {"FilterGroupId": "fg-booked-core", "CrossDataset": "SINGLE_DATASET",
+                 "Status": "ENABLED",
+                 "Filters": [{"CategoryFilter": {
+                     "FilterId": "f-booked-core", "Column": col(bva, "core_hours"),
+                     "Configuration": {"FilterListConfiguration": {
+                         "MatchOperator": "CONTAINS", "CategoryValues": ["Yes"]}}}}],
+                 "ScopeConfiguration": {"SelectedSheets": {"SheetVisualScopingConfigurations": [
+                     {"SheetId": "booked", "Scope": "SELECTED_VISUALS",
+                      "VisualIds": ["b-used", "b-unbooked", "b-booked", "b-rooms"]}]}}}
+    outcome_filter = {"FilterGroupId": "fg-outcome", "CrossDataset": "SINGLE_DATASET",
+                      "Status": "ENABLED",
+                      "Filters": [{"CategoryFilter": {
+                          "FilterId": "f-outcome", "Column": col(ses, "outcome"),
+                          "Configuration": {"FilterListConfiguration": {
+                              "MatchOperator": "CONTAINS", "SelectAllOptions": "FILTER_ALL_VALUES",
+                              "NullOption": "NON_NULLS_ONLY"}}}}],
+                      "ScopeConfiguration": {"SelectedSheets": {"SheetVisualScopingConfigurations": [
+                          {"SheetId": "booked", "Scope": "SELECTED_VISUALS",
+                           "VisualIds": ["b-table"]}]}}}
+
     return {
         "DataSetIdentifierDeclarations": [
             {"Identifier": occ, "DataSetArn": occupancy_arn},
             {"Identifier": cov, "DataSetArn": coverage_arn},
+            {"Identifier": bva, "DataSetArn": booked_arn},
+            {"Identifier": ses, "DataSetArn": session_arn},
         ],
         "CalculatedFields": [
             {"DataSetIdentifier": cov, "Name": "coverage_pct", "Expression": COVERAGE_EXPRESSION},
@@ -350,10 +521,25 @@ def dashboard(occupancy_arn, coverage_arn):
             {"DataSetIdentifier": occ, "Name": "Peak count",
              "Expression": "{people_count_scheduled}"},
             {"DataSetIdentifier": occ, "Name": "Room capacity", "Expression": "{capacity}"},
+            {"DataSetIdentifier": bva, "Name": used_booked,
+             "Expression": "sum({booked_used_slots}) / sum({booked_slots}) * 100"},
+            {"DataSetIdentifier": bva, "Name": used_unbooked,
+             "Expression": "sum({unbooked_used_slots}) / sum({unbooked_slots}) * 100"},
+            {"DataSetIdentifier": bva, "Name": "occupied_unbooked_pct",
+             "Expression": "sum({unbooked_used_slots}) / "
+                           "(sum({booked_used_slots}) + sum({unbooked_used_slots})) * 100"},
+            {"DataSetIdentifier": bva, "Name": "booked_time_pct",
+             "Expression": "sum({booked_slots}) / sum({observed_slots}) * 100"},
+            {"DataSetIdentifier": ses, "Name": "empty_bookings_pct",
+             "Expression": "sum(ifelse({outcome} = 'Empty', 1, 0)) / "
+                           "sum(ifelse({outcome} = 'No sensor data', 0, 1)) * 100"},
         ],
         "FilterGroups": [
             *sheet_filters("occupancy", "f-date", "f-room", occ),
             *sheet_filters("quality", "f-date-q", "f-room-q", occ),
+            *sheet_filters("booked", "f-date-b", "f-room-b", bva),
+            core_only,
+            outcome_filter,
             {"FilterGroupId": "fg-presence", "CrossDataset": "SINGLE_DATASET", "Status": "ENABLED",
              "Filters": [{"CategoryFilter": {
                  "FilterId": "f-presence", "Column": col(occ, "sensor_type"),
@@ -384,7 +570,7 @@ def dashboard(occupancy_arn, coverage_arn):
                  {"SheetId": "occupancy", "Scope": "SELECTED_VISUALS",
                   "VisualIds": ["occ-trend"]}]}}},
         ],
-        "Sheets": [occupancy_sheet, quality_sheet],
+        "Sheets": [occupancy_sheet, booked_sheet, quality_sheet],
     }
 
 
@@ -509,7 +695,8 @@ def topic(occupancy_arn, coverage_arn):
     }
 
 
-def main(out, data_source_arn, occupancy_arn, coverage_arn, catalog, namespace):
+def main(out, data_source_arn, occupancy_arn, coverage_arn, booked_arn, session_arn,
+         catalog, namespace):
     out = Path(out)
     curated = f'"{catalog}"."{namespace}"'
     files = {
@@ -517,7 +704,11 @@ def main(out, data_source_arn, occupancy_arn, coverage_arn, catalog, namespace):
             "room_occupancy", "room_occupancy.sql", OCCUPANCY_COLUMNS, data_source_arn, curated),
         "coverage-table.json": physical_table(
             "occupancy_coverage", "occupancy_coverage.sql", COVERAGE_COLUMNS, data_source_arn, curated),
-        "occupancy-dashboard.json": dashboard(occupancy_arn, coverage_arn),
+        "booked-table.json": physical_table(
+            "booked_vs_actual", "booked_vs_actual.sql", BOOKED_COLUMNS, data_source_arn, curated),
+        "sessions-table.json": physical_table(
+            "booking_sessions", "booking_sessions.sql", SESSION_COLUMNS, data_source_arn, curated),
+        "occupancy-dashboard.json": dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn),
         "topic.json": topic(occupancy_arn, coverage_arn),
     }
     for name, body in files.items():

@@ -99,16 +99,30 @@ OCC_ID="${PREFIX}-room-occupancy"
 COV_ID="${PREFIX}-occupancy-coverage"
 OCC_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${OCC_ID}"
 COV_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${COV_ID}"
+# Booked against actual: the TimeEdit timetable joined to the door counters, per room
+# and hour (booked-vs-actual) and per booking (booking-sessions).
+BVA_ID="${PREFIX}-booked-vs-actual"
+SES_ID="${PREFIX}-booking-sessions"
+BVA_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${BVA_ID}"
+SES_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${SES_ID}"
 python3 -I "$(dirname "$0")/occupancy.py" "$TMP" "$DS_ARN" "$OCC_ARN" "$COV_ARN" \
-  "s3tablescatalog/$CURATED_BUCKET" "$CURATED_NS"
+  "$BVA_ARN" "$SES_ARN" "s3tablescatalog/$CURATED_BUCKET" "$CURATED_NS"
 upsert_dataset "$OCC_ID" --name "Room occupancy readings" --import-mode SPICE \
   --physical-table-map "file://$TMP/occupancy-table.json" \
   --row-level-permission-data-set "file://$TMP/rls.json"
 upsert_dataset "$COV_ID" --name "Occupancy data coverage" --import-mode SPICE \
   --physical-table-map "file://$TMP/coverage-table.json" \
   --row-level-permission-data-set "file://$TMP/rls.json"
+upsert_dataset "$BVA_ID" --name "Booked vs actual by hour" --import-mode SPICE \
+  --physical-table-map "file://$TMP/booked-table.json" \
+  --row-level-permission-data-set "file://$TMP/rls.json"
+upsert_dataset "$SES_ID" --name "Bookings and door counts" --import-mode SPICE \
+  --physical-table-map "file://$TMP/sessions-table.json" \
+  --row-level-permission-data-set "file://$TMP/rls.json"
 hourly_refresh "$OCC_ID"
 hourly_refresh "$COV_ID"
+hourly_refresh "$BVA_ID"
+hourly_refresh "$SES_ID"
 
 # --- Dashboards ----------------------------------------------------------------------
 # The two environmental dashboards on the synthetic BMS readings (Building Environmental
