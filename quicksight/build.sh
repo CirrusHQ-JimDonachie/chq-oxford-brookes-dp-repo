@@ -153,8 +153,8 @@ upsert_dashboard() {
 upsert_dashboard "${PREFIX}-room-occupancy" "Room Occupancy" "$TMP/occupancy-dashboard.json"
 
 # --- Q Topic (natural-language model) -------------------------------------------------
-# The SoW's one Q Topic, modelled on the Smart-Vis occupancy datasets (occupancy.py writes
-# topic.json). The topic id keeps its first name; the synthetic BMS data is no longer in it.
+# The SoW's one Q Topic, modelled on the Smart-Vis occupancy, coverage and booking datasets
+# (occupancy.py writes topic.json). The topic id keeps its first name; the synthetic BMS data is no longer in it.
 TOPIC_ID="${PREFIX}-building-environmental"
 if qs describe-topic --topic-id "$TOPIC_ID" >/dev/null 2>&1; then
   echo "updating topic $TOPIC_ID"
@@ -174,12 +174,12 @@ qs update-topic-permissions --topic-id "$TOPIC_ID" --grant-permissions "[{\"Prin
 # clock, and drop the schedule of any dataset no longer in the Topic.
 scheduled=$(qs list-topic-refresh-schedules --topic-id "$TOPIC_ID" --query 'RefreshSchedules[].DatasetArn' --output text 2>/dev/null || true)
 for arn in $scheduled; do
-  case " $OCC_ARN $COV_ARN " in
+  case " $OCC_ARN $COV_ARN $BVA_ARN $SES_ARN " in
     *" $arn "*) ;;
     *) qs delete-topic-refresh-schedule --topic-id "$TOPIC_ID" --dataset-id "${arn##*/}" --query Status --output text ;;
   esac
 done
-for arn in "$OCC_ARN" "$COV_ARN"; do
+for arn in "$OCC_ARN" "$COV_ARN" "$BVA_ARN" "$SES_ARN"; do
   case " $scheduled " in
     *" $arn "*) ;;
     *) qs create-topic-refresh-schedule --topic-id "$TOPIC_ID" --dataset-arn "$arn" \

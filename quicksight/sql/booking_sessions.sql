@@ -38,8 +38,11 @@ WITH bookings AS (
          date_parse(local_date || ' ' || local_time, '%Y-%m-%d %H:%i') AS slot_at,
          max(people_count) AS people,
          max(capacity) AS capacity
-  FROM {curated}."smartvis_occupancy"
+  FROM {curated}."smartvis_occupancy" s
   WHERE people_count IS NOT NULL AND minute(reading_at) % 5 = 0
+    -- Provisional readings (see room_occupancy.sql) are left out.
+    AND NOT EXISTS (SELECT 1 FROM {provisional}
+                    WHERE p.room_id = upper(s.room_id) AND CAST(s.local_date AS date) < p.valid_from)
   GROUP BY 1, 2
 ), span AS (
   SELECT CAST(min(slot_at) AS date) AS d0, CAST(max(slot_at) AS date) AS d1 FROM sv

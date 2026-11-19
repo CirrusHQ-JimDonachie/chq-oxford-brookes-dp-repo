@@ -9,7 +9,13 @@
 -- Counts: SMARTviz resets every room to zero at 00:00 and inserts zero readings off
 -- the five-minute grid to correct drift. people_count_scheduled and utilisation_pct
 -- leave the off-grid corrections out, so averages are over the regular readings;
--- reading_kind labels each row so they can be shown or counted.
+-- reading_kind labels each row so they can be shown or counted; corrections are
+-- inferred from their timing, SMARTviz does not mark them.
+--
+-- Provisional readings: PROVISIONAL_PERIODS in occupancy.py lists room periods Oxford Brookes and SMARTviz
+-- could not verify (NHHB 1.15 before its current sensors were installed on 14 Oct
+-- 2026). They keep their raw people_count, flagged by data_status, but are left out of
+-- people_count_scheduled, people_count_core and both utilisation measures.
 WITH rooms_latest AS (
   SELECT * FROM {curated}."rooms"
   WHERE source_file = (SELECT max_by(source_file, ingested_at) FROM {curated}."rooms")
@@ -26,8 +32,10 @@ WITH rooms_latest AS (
   SELECT o.*,
          date_parse(o.local_date || ' ' || o.local_time, '%Y-%m-%d %H:%i') AS local_at,
          CAST(o.reading_at AT TIME ZONE 'UTC' AS timestamp(6)) AS reading_at_utc,
-         o.people_count IS NOT NULL AND minute(o.reading_at) % 5 = 0 AS on_grid_count
+         p.reason AS provisional_reason,
+         o.people_count IS NOT NULL AND minute(o.reading_at) % 5 = 0 AND p.room_id IS NULL AS on_grid_count
   FROM {curated}."smartvis_occupancy" o
+  LEFT JOIN {provisional} ON p.room_id = upper(o.room_id) AND CAST(o.local_date AS date) < p.valid_from
 ), labelled AS (
   SELECT o.*,
          day_of_week(o.local_at) <= 5 AND hour(o.local_at) BETWEEN 8 AND 17 AS is_core
@@ -58,9 +66,11 @@ SELECT o.room_id,
        CASE WHEN o.on_grid_count AND o.capacity > 0 THEN 100.0 * o.people_count / o.capacity END AS utilisation_pct,
        CASE WHEN o.on_grid_count AND o.is_core AND o.capacity > 0 THEN 100.0 * o.people_count / o.capacity END AS utilisation_pct_core,
        CASE WHEN o.people_count IS NULL THEN 'Presence event'
-            WHEN NOT o.on_grid_count THEN 'Off-grid correction'
+            WHEN minute(o.reading_at) % 5 <> 0 THEN 'Off-grid correction (inferred)'
             WHEN o.local_time = '00:00' THEN 'Midnight reset'
             ELSE 'Scheduled' END AS reading_kind,
+       CASE WHEN o.provisional_reason IS NULL THEN 'Validated' ELSE 'Provisional' END AS data_status,
+       o.provisional_reason,
        o.source_file
 FROM labelled o
 LEFT JOIN room r ON r.room_code = o.room_code

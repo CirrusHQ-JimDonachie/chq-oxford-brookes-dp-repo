@@ -17,7 +17,10 @@
 --
 -- Every room-day from the first to the last day in the data is listed, including
 -- days with no readings at all (observed_slots 0). Presence sensors report when the
--- state changes, not on a five-minute schedule, so they are not included here.
+-- state changes, not on a five-minute schedule, so the five-minute indicators do not
+-- apply to them: their rooms are listed, one row per day, with the indicators left
+-- empty, which the dashboard shows as N/A (agreed with Oxford Brookes, 18 Nov).
+-- corrections are inferred from their timing; SMARTviz does not mark them.
 -- {curated} is replaced by build.sh, as in room_occupancy.sql.
 WITH o AS (
   SELECT room_id, room_code, space_name, capacity, reading_at, local_time,
@@ -66,6 +69,7 @@ WITH o AS (
 SELECT room_id,
        room_code,
        space_name,
+       'Door counter' AS sensor_type,
        capacity,
        d AS local_date,
        first_day,
@@ -79,3 +83,16 @@ SELECT room_id,
        coalesce(midnight_resets, 0) AS midnight_resets,
        coalesce(corrections, 0) AS corrections
 FROM scored
+UNION ALL
+SELECT pr.room_id, pr.room_code, pr.space_name, 'Presence sensor', pr.capacity, days.d,
+       pr.first_day, CASE WHEN days.d >= pr.first_day THEN 'Yes' ELSE 'No' END,
+       CAST(NULL AS bigint), CAST(NULL AS bigint), CAST(NULL AS bigint), CAST(NULL AS double),
+       CAST(NULL AS bigint), CAST(NULL AS bigint)
+FROM (
+  SELECT room_id, max(room_code) AS room_code, max(space_name) AS space_name,
+         max(capacity) AS capacity, min(CAST(local_date AS date)) AS first_day
+  FROM {curated}."smartvis_occupancy"
+  GROUP BY room_id
+  HAVING count(people_count) = 0
+) pr
+CROSS JOIN days

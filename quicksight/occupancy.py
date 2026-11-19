@@ -8,7 +8,7 @@ build.sh calls this, then passes the files to the QuickSight API. It writes:
   the TimeEdit timetable to the door counters;
 - wifi-table.json: Wi-Fi devices against door counts per room and hour (trial Wi-Fi);
 - occupancy-dashboard.json: the Room Occupancy dashboard;
-- topic.json: the Q Topic, modelled on both datasets.
+- topic.json: the Q Topic, modelled on the occupancy, coverage and booking datasets.
 
     python3 quicksight/occupancy.py <out dir> <data source arn> <occupancy dataset arn> \
         <coverage dataset arn> <booked dataset arn> <sessions dataset arn> \
@@ -30,10 +30,11 @@ OCCUPANCY_COLUMNS = [
     ("people_count", "DECIMAL"), ("people_count_scheduled", "DECIMAL"),
     ("people_count_core", "DECIMAL"), ("presence", "DECIMAL"), ("capacity", "INTEGER"),
     ("area_m2", "DECIMAL"), ("utilisation_pct", "DECIMAL"), ("utilisation_pct_core", "DECIMAL"),
-    ("reading_kind", "STRING"), ("source_file", "STRING"),
+    ("reading_kind", "STRING"), ("data_status", "STRING"), ("provisional_reason", "STRING"),
+    ("source_file", "STRING"),
 ]
 COVERAGE_COLUMNS = [
-    ("room_id", "STRING"), ("room_code", "STRING"), ("space_name", "STRING"),
+    ("room_id", "STRING"), ("room_code", "STRING"), ("space_name", "STRING"), ("sensor_type", "STRING"),
     ("capacity", "INTEGER"), ("local_date", "DATETIME"), ("first_day", "DATETIME"),
     ("in_service", "STRING"), ("expected_slots", "INTEGER"), ("observed_slots", "INTEGER"),
     ("longest_gap_slots", "INTEGER"), ("longest_gap_hours", "DECIMAL"),
@@ -63,6 +64,22 @@ WIFI_COLUMNS = [
     ("people_sum", "DECIMAL"), ("devices_sum", "INTEGER"), ("people_in_use_slots", "INTEGER"),
     ("wifi_in_use_slots", "INTEGER"), ("agree_slots", "INTEGER"),
 ]
+# Room periods whose Smart-Vis readings Oxford Brookes and SMARTviz could not verify:
+# kept as raw counts, flagged Provisional, and left out of every derived measure.
+# NHHB 1.15's September readings came from earlier sensors, not identified, that
+# stopped around 24 Sep; the current sensors were installed on 14 Oct (ECS, 18 Nov).
+PROVISIONAL_PERIODS = [
+    ("NHHB.1.15", "2026-10-14",
+     "Before the current sensors were installed on 14 Oct 2026; earlier devices not verified"),
+]
+
+
+def provisional_values():
+    rows = ", ".join(f"('{room}', DATE '{until}', '{reason}')"
+                     for room, until, reason in PROVISIONAL_PERIODS)
+    return f"(VALUES {rows}) AS p(room_id, valid_from, reason)"
+
+
 # TimeEdit tables the booked-vs-actual SQL reads. The trial tables until Oxford Brookes
 # sign off the format; then building_data.timetable_teaching / timetable_non_teaching.
 TIMETABLE_TABLES = {
@@ -79,6 +96,7 @@ CAVEAT = (
 
 def physical_table(name, sql_file, columns, data_source_arn, curated):
     sql = (HERE / "sql" / sql_file).read_text().replace("{curated}", curated)
+    sql = sql.replace("{provisional}", provisional_values())
     for placeholder, table in TIMETABLE_TABLES.items():
         sql = sql.replace(placeholder, table)
     # The map key is an id (letters, digits, hyphens); the name may have underscores.
@@ -119,16 +137,22 @@ def date_dim(field_id, ds, name, granularity="DAY"):
                                    "DateGranularity": granularity}}
 
 
-def number_format(decimals=1, suffix=None):
+def number_format(decimals=1, suffix=None, na=False):
     cfg = {"DecimalPlacesConfiguration": {"DecimalPlaces": decimals}}
     if suffix:
         cfg["Suffix"] = suffix
+    if na:
+        # Presence-sensor rooms have no five-minute indicators: show N/A, not blank.
+        cfg["NullValueFormatConfiguration"] = {"NullString": "N/A"}
     # A numerical field's FormatConfiguration is itself a NumberFormatConfiguration.
     return {"FormatConfiguration": {"NumberDisplayFormatConfiguration": cfg}}
 
 
 PCT = number_format(1, "%")
 ONE_DP = number_format(1)
+PCT_NA = number_format(1, "%", na=True)
+ONE_DP_NA = number_format(1, na=True)
+WHOLE_NA = number_format(0, na=True)
 
 
 def labels(ds, *fields):
@@ -421,22 +445,22 @@ def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_arn):
                 "Longest run of missing readings within one day"),
             kpi("q-resets", "Midnight resets", measure("q-res", cov, "midnight_resets", "SUM"),
                 "System-generated zero at 00:00, not an observed exit"),
-            kpi("q-corr", "Correction readings", measure("q-cor", cov, "corrections", "SUM"),
-                "Zero readings inserted off the five-minute grid to correct drift"),
+            kpi("q-corr", "Correction readings (inferred)", measure("q-cor", cov, "corrections", "SUM"),
+                "Zero readings off the five-minute grid, taken to be drift corrections; SMARTviz does not mark them"),
             {"TableVisual": {"VisualId": "q-rooms", **title(
                 "Coverage by room", CAVEAT + " Presence-sensor rooms report on change, "
-                "so coverage does not apply to them."),
+                "so the five-minute indicators are N/A for them."),
                 "ChartConfiguration": {
                     "FieldWells": {"TableAggregatedFieldWells": {
                         "GroupBy": [dim("qr-room", cov, "room_id")],
                         "Values": [
-                            measure("qr-cov", cov, "coverage_pct", fmt=PCT),
-                            measure("qr-svc", cov, "in_service_coverage_pct", fmt=PCT),
-                            measure("qr-obs", cov, "observed_slots", "SUM"),
-                            measure("qr-exp", cov, "expected_slots", "SUM"),
-                            measure("qr-gap", cov, "longest_gap_hours", "MAX", ONE_DP),
-                            measure("qr-res", cov, "midnight_resets", "SUM"),
-                            measure("qr-cor", cov, "corrections", "SUM"),
+                            measure("qr-cov", cov, "coverage_pct", fmt=PCT_NA),
+                            measure("qr-svc", cov, "in_service_coverage_pct", fmt=PCT_NA),
+                            measure("qr-obs", cov, "observed_slots", "SUM", WHOLE_NA),
+                            measure("qr-exp", cov, "expected_slots", "SUM", WHOLE_NA),
+                            measure("qr-gap", cov, "longest_gap_hours", "MAX", ONE_DP_NA),
+                            measure("qr-res", cov, "midnight_resets", "SUM", WHOLE_NA),
+                            measure("qr-cor", cov, "corrections", "SUM", WHOLE_NA),
                         ]}},
                     "SortConfiguration": {"RowSort": [
                         {"FieldSort": {"FieldId": "qr-cov", "Direction": "ASC"}}]},
@@ -448,7 +472,7 @@ def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_arn):
                         {"FieldId": "qr-exp", "CustomLabel": "Slots expected"},
                         {"FieldId": "qr-gap", "CustomLabel": "Longest gap (h)"},
                         {"FieldId": "qr-res", "CustomLabel": "Midnight resets"},
-                        {"FieldId": "qr-cor", "CustomLabel": "Corrections"},
+                        {"FieldId": "qr-cor", "CustomLabel": "Corrections (inferred)"},
                     ]}}}},
             {"LineChartVisual": {"VisualId": "q-trend", **title(
                 "Coverage by day", "All selected door-counter rooms together"),
@@ -729,7 +753,20 @@ PERCENT_FORMAT = {"DisplayFormat": "NUMBER", "DisplayFormatOptions": {
 ROOM_SYNONYMS = ["room", "space", "location", "room id", "NHHB room", "teaching room"]
 
 
-def topic(occupancy_arn, coverage_arn):
+def topic_calc(name, description, expression, synonyms, percent=True):
+    field = {"CalculatedFieldName": name, "CalculatedFieldDescription": description,
+             "Expression": expression, "CalculatedFieldSynonyms": synonyms,
+             "IsIncludedInTopic": True, "ColumnDataRole": "MEASURE", "NonAdditive": True}
+    if percent:
+        field["DefaultFormatting"] = PERCENT_FORMAT
+    return field
+
+
+CORE_HOURS = dimension("core_hours", "Core hours", "Yes for weekdays 08:00 to 18:00 UK time.",
+                       ["working hours", "teaching hours", "office hours", "daytime"])
+
+
+def topic(occupancy_arn, coverage_arn, booked_arn, session_arn):
     occupancy_columns = [
         dimension("room_id", "Room", "Room, e.g. NHHB.2.14 (building NHHB, floor 2, room 14).",
                   ROOM_SYNONYMS),
@@ -758,8 +795,12 @@ def topic(occupancy_arn, coverage_arn):
         dimension("core_hours", "Core hours", "Yes for weekdays 08:00 to 18:00 UK time.",
                   ["working hours", "teaching hours", "office hours", "daytime"]),
         dimension("reading_kind", "Reading kind",
-                  "Scheduled, Midnight reset, Off-grid correction (system generated) or Presence event.",
+                  "Scheduled, Midnight reset, Off-grid correction (inferred, system generated) or Presence event.",
                   ["reading type"]),
+        dimension("data_status", "Data status",
+                  "Validated, or Provisional for readings Oxford Brookes and SMARTviz could not verify "
+                  "(NHHB 1.15 before 14 Oct 2026). Provisional readings are left out of people counts "
+                  "and occupancy %.", ["provisional", "validated", "verified", "data status"]),
         topic_measure("people_count_scheduled", "People count",
                       "Number of people in the room from the door counters, at five-minute intervals. "
                       "Average it over time; add it up across rooms only at one moment.",
@@ -778,28 +819,93 @@ def topic(occupancy_arn, coverage_arn):
         topic_measure("area_m2", "Area (m²)", "Floor area of the room in square metres.",
                       ["area", "floor area", "square metres", "size in m2"], "MAX", ["SUM", "AVERAGE"]),
         *hidden("space_name", "archibus_rooms", "reading_at_utc", "people_count",
-                "people_count_core", "utilisation_pct_core", "source_file"),
+                "people_count_core", "utilisation_pct_core", "provisional_reason", "source_file"),
     ]
     coverage_columns = [
         dimension("room_id", "Room", "Room, e.g. NHHB.2.14.", ROOM_SYNONYMS),
         dimension("local_date", "Date", "UK date.", ["day", "date"], TimeGranularity="DAY"),
         dimension("in_service", "In service", "Yes on and after the room's first reading.",
                   ["monitored", "commissioned"]),
+        dimension("sensor_type", "Sensor type", "Door counter, or presence sensor: coverage, gaps, "
+                  "resets and corrections do not apply to presence sensors.", ["sensor", "device type"]),
         topic_measure("longest_gap_hours", "Longest gap (hours)",
                       "Longest run of missing door-counter readings within a day, in hours.",
                       ["gap", "outage", "longest gap", "missing data"], "MAX", ["SUM", "AVERAGE"]),
         topic_measure("midnight_resets", "Midnight resets",
                       "System-generated zero readings at 00:00.", ["resets"], "SUM", []),
-        topic_measure("corrections", "Correction readings",
-                      "Zero readings SMARTviz inserts off the five-minute grid to correct drift.",
+        topic_measure("corrections", "Correction readings (inferred)",
+                      "Zero readings off the five-minute grid, taken to be SMARTviz drift corrections; "
+                      "SMARTviz does not mark them, so they are inferred from their timing.",
                       ["corrections", "adjustments"], "SUM", []),
         *hidden("room_code", "space_name", "capacity", "first_day", "expected_slots",
                 "observed_slots", "longest_gap_slots"),
     ]
+    session_columns = [
+        dimension("booking_type", "Booking type", "Teaching (timetabled classes) or Non-teaching "
+                  "(events, meetings, inductions, open days and other room bookings).",
+                  ["type of booking", "booking kind", "class or event"],
+                  CellValueSynonyms=[{"CellValue": "Teaching", "Synonyms": ["class", "lecture", "timetabled", "teaching"]},
+                                     {"CellValue": "Non-teaching", "Synonyms": ["event", "meeting", "non teaching"]}]),
+        dimension("purpose", "Purpose", "What a non-teaching booking was for, e.g. Induction, "
+                  "Open Day, Meeting; Teaching for timetabled classes.", ["reason", "event type", "purpose"]),
+        dimension("booking_id", "Booking", "TimeEdit booking id. A booking held in several rooms "
+                  "has one row per room.", ["booking", "reservation", "booking id"]),
+        dimension("room_id", "Room", "Booked room, e.g. NHHB.2.14.", ROOM_SYNONYMS),
+        dimension("floor", "Floor", "Floor of the NHHB building.", ["floor", "level", "storey"]),
+        dimension("module", "Module", "Module code of a teaching booking, e.g. ENGR5002_S12_1_202609.",
+                  ["module", "course", "class", "subject"]),
+        dimension("faculty", "Faculty", "Faculty or directorate that made the booking.",
+                  ["faculty", "directorate"]),
+        dimension("school", "School", "School or department of a teaching booking.",
+                  ["school", "department"]),
+        dimension("local_date", "Date", "UK date of the booking.", ["day", "date"], TimeGranularity="DAY"),
+        dimension("start_at", "Start time", "When the booking starts, UK local time.",
+                  ["start", "starting at", "time"], TimeGranularity="MINUTE"),
+        dimension("weekday", "Weekday", "Day of the week the booking is on, 1 Mon to 7 Sun.",
+                  ["day of week", "weekday"]),
+        dimension("hour_of_day", "Start hour", "Hour the booking starts, 0 to 23, UK local time.",
+                  ["hour", "time of day"]),
+        CORE_HOURS,
+        dimension("outcome", "Outcome", "What the door counter saw during the booking: Used if anyone "
+                  "was counted, Empty if nobody was, No sensor data if readings cover under half of it.",
+                  ["outcome", "attendance", "result", "was it used"],
+                  CellValueSynonyms=[{"CellValue": "Empty", "Synonyms": ["empty", "unused", "no-show", "no show",
+                                                                          "nobody came", "not used", "unattended"]},
+                                     {"CellValue": "Used", "Synonyms": ["used", "attended", "occupied"]},
+                                     {"CellValue": "No sensor data", "Synonyms": ["no data", "unknown"]}]),
+        topic_measure("peak_people", "Peak count", "Most people the door counter saw during the booking.",
+                      ["peak", "maximum people", "most people", "peak attendance"], "MAX", ["SUM"]),
+        topic_measure("avg_people", "Average count", "Average people the door counter saw during the booking.",
+                      ["attendance", "average people", "people", "how many people"], "AVERAGE", ["SUM"]),
+        topic_measure("capacity", "Capacity", "Seats or people the room is designed for.",
+                      ["capacity", "seats", "size"], "MAX", ["SUM", "AVERAGE"]),
+        topic_measure("peak_pct_capacity", "Peak % of capacity",
+                      "Peak count during the booking as a percentage of the room's capacity.",
+                      ["how full", "fill rate", "peak utilisation"], "AVERAGE", ["SUM"],
+                      DefaultFormatting=PERCENT_FORMAT),
+        topic_measure("booked_minutes", "Booked minutes", "Length of the booking in minutes.",
+                      ["length", "duration", "minutes booked"], "SUM", []),
+        *hidden("module_group", "end_at", "start_time", "booked_slots", "observed_slots",
+                "avg_pct_capacity"),
+    ]
+    booked_columns = [
+        dimension("room_id", "Room", "Room, e.g. NHHB.2.14.", ROOM_SYNONYMS),
+        dimension("floor", "Floor", "Floor of the NHHB building.", ["floor", "level", "storey"]),
+        dimension("room_type", "Room type", "Archibus room type, e.g. COMPUTERS, LECTURE.",
+                  ["type of room", "space type"]),
+        dimension("local_date", "Date", "UK date.", ["day", "date"], TimeGranularity="DAY"),
+        dimension("weekday", "Weekday", "Day of the week, 1 Mon to 7 Sun.", ["day of week", "weekday"]),
+        dimension("hour_of_day", "Hour", "Hour of the day, 0 to 23, UK local time.",
+                  ["hour", "time of day"]),
+        CORE_HOURS,
+        *hidden("capacity", "observed_slots", "booked_slots", "booked_used_slots", "unbooked_slots",
+                "unbooked_used_slots", "booked_people_sum"),
+    ]
     return {
         "Name": "Building Occupancy",
         "Description": "Room occupancy in the NHHB building from SMARTviz door counters and "
-                       "presence sensors, with data-quality coverage.",
+                       "presence sensors, with data-quality coverage, and TimeEdit bookings "
+                       "compared with what the door counters saw.",
         "UserExperienceVersion": "NEW_READER_EXPERIENCE",
         "DataSets": [
             {"DatasetArn": occupancy_arn, "DatasetName": "Room occupancy readings",
@@ -821,6 +927,35 @@ def topic(occupancy_arn, coverage_arn):
                                              "data completeness"],
                  "IsIncludedInTopic": True, "ColumnDataRole": "MEASURE", "NonAdditive": True,
                  "DefaultFormatting": PERCENT_FORMAT}]},
+            {"DatasetArn": session_arn, "DatasetName": "Bookings and door counts",
+             "DatasetDescription": "One row per TimeEdit booking in an NHHB door-counter room, with "
+                                   "the peak and average people counted during it and whether it "
+                                   "was used, empty or had no sensor data.",
+             "DataAggregation": {"DatasetRowDateGranularity": "MINUTE", "DefaultDateColumnName": "start_at"},
+             "Columns": session_columns,
+             "CalculatedFields": [topic_calc(
+                 "Empty bookings %", "Share of bookings with sensor data in which nobody was counted.",
+                 "sum(ifelse({outcome} = 'Empty', 1, 0)) / sum(ifelse({outcome} = 'No sensor data', 0, 1)) * 100",
+                 ["no-show rate", "empty rate", "unused bookings", "share of empty bookings"])]},
+            {"DatasetArn": booked_arn, "DatasetName": "Booked vs actual by hour",
+             "DatasetDescription": "One row per timetabled door-counter room per hour: how much of the "
+                                   "time was booked, and how much booked and unbooked time had anyone in.",
+             "DataAggregation": {"DatasetRowDateGranularity": "HOUR", "DefaultDateColumnName": "local_date"},
+             "Columns": booked_columns,
+             "CalculatedFields": [
+                 topic_calc("Booked time in use %", "Share of booked time in which anyone was counted.",
+                            "sum({booked_used_slots}) / sum({booked_slots}) * 100",
+                            ["booked utilisation", "booked rooms in use", "use of booked time"]),
+                 topic_calc("Unbooked time in use %", "Share of unbooked time in which anyone was counted.",
+                            "sum({unbooked_used_slots}) / sum({unbooked_slots}) * 100",
+                            ["unbooked use", "use without a booking", "unbooked utilisation"]),
+                 topic_calc("Occupied time with no booking %",
+                            "Share of the time anyone was counted that fell outside a booking.",
+                            "sum({unbooked_used_slots}) / (sum({booked_used_slots}) + sum({unbooked_used_slots})) * 100",
+                            ["unbooked occupancy", "use outside bookings"]),
+                 topic_calc("Time booked %", "Share of the time a room was booked.",
+                            "sum({booked_slots}) / sum({observed_slots}) * 100",
+                            ["booking rate", "how much booked", "booked share"])]},
         ],
     }
 
@@ -842,7 +977,7 @@ def main(out, data_source_arn, occupancy_arn, coverage_arn, booked_arn, session_
             "wifi_vs_door", "wifi_vs_door.sql", WIFI_COLUMNS, data_source_arn, curated),
         "occupancy-dashboard.json": dashboard(occupancy_arn, coverage_arn, booked_arn,
                                               session_arn, wifi_arn),
-        "topic.json": topic(occupancy_arn, coverage_arn),
+        "topic.json": topic(occupancy_arn, coverage_arn, booked_arn, session_arn),
     }
     for name, body in files.items():
         (out / name).write_text(json.dumps(body))

@@ -25,8 +25,11 @@ WITH rooms_latest AS (
   SELECT upper(room_id) AS room_id,
          date_parse(local_date || ' ' || local_time, '%Y-%m-%d %H:%i') AS slot_at,
          max(people_count) AS people
-  FROM {curated}."smartvis_occupancy"
+  FROM {curated}."smartvis_occupancy" s
   WHERE people_count IS NOT NULL AND minute(reading_at) % 5 = 0
+    -- Provisional readings (see room_occupancy.sql) are left out.
+    AND NOT EXISTS (SELECT 1 FROM {provisional}
+                    WHERE p.room_id = upper(s.room_id) AND CAST(s.local_date AS date) < p.valid_from)
   GROUP BY 1, 2
 ), room_ap AS (
   SELECT * FROM ap WHERE room_id IN (SELECT DISTINCT room_id FROM sv)
