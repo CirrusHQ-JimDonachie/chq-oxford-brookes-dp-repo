@@ -1,0 +1,1 @@
+# No bundled libraries: boto3 comes with the Lambda Python runtime.

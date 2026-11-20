@@ -35,6 +35,11 @@ Metadata:
           - DataQualityAlarmPeriodSeconds
           - LogRetentionDays
           - LogLevel
+      - Label:
+          default: Booked-but-empty report
+        Parameters:
+          - NudgeScheduleExpression
+          - NudgeExcludedRooms
     ParameterLabels:
       ProjectSlug:
         default: Project slug
@@ -207,6 +212,17 @@ Parameters:
       - WARN
       - ERROR
 
+  NudgeScheduleExpression:
+    Type: String
+    Description: >-
+      When the booked-but-empty report runs, as an EventBridge Scheduler
+      expression in UK time; DISABLED stops it.
+    Default: 'cron(0 7 * * ? *)'
+  NudgeExcludedRooms:
+    Type: String
+    Description: Comma-separated rooms the booked-but-empty report leaves out.
+    Default: 'NHHB.1.12'
+
 Resources:
   FoundationStack:
     Type: AWS::CloudFormation::Stack
@@ -262,6 +278,27 @@ Resources:
         QuickSightServiceRoleArn: !Ref QuickSightServiceRoleArn
         QuickSightPrincipalArn: !Ref QuickSightPrincipalArn
 
+  # ECS strategic question 2.3: a daily e-mail of teaching bookings in which the
+  # door counter saw nobody. Its own stack so it can be removed without touching
+  # the ingestion path.
+  NudgeStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./nested/nudge.yaml
+      Parameters:
+        ProjectSlug: !Ref ProjectSlug
+        Environment: !Ref Environment
+        KmsKeyArn: !GetAtt FoundationStack.Outputs.KmsKeyArn
+        AthenaWorkGroupName: !GetAtt AnalyticsStack.Outputs.AthenaWorkGroupName
+        AthenaResultsBucketName: !GetAtt StorageStack.Outputs.AthenaResultsBucketName
+        CuratedTableBucketName: !GetAtt StorageStack.Outputs.CuratedTableBucketName
+        CuratedNamespaceName: !GetAtt StorageStack.Outputs.CuratedNamespaceName
+        AlertTopicArn: !GetAtt EngineStack.Outputs.AlertTopicArn
+        NudgeScheduleExpression: !Ref NudgeScheduleExpression
+        NudgeExcludedRooms: !Ref NudgeExcludedRooms
+        LogRetentionDays: !Ref LogRetentionDays
+        LogLevel: !Ref LogLevel
+
   ApiStack:
     Type: AWS::CloudFormation::Stack
     Properties:
@@ -286,6 +323,9 @@ Outputs:
   TransformFunctionName:
     Description: Name of the transform function, for log and metric lookups.
     Value: !GetAtt EngineStack.Outputs.TransformFunctionName
+  NudgeFunctionName:
+    Description: Booked-but-empty report function; invoke with {"date":"YYYY-MM-DD"} for a given day.
+    Value: !GetAtt NudgeStack.Outputs.NudgeFunctionName
   AlertTopicArn:
     Description: Topic carrying threshold alerts and alarm notifications.
     Value: !GetAtt EngineStack.Outputs.AlertTopicArn

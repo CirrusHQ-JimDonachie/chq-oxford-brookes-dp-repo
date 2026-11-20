@@ -1,0 +1,293 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  Booked but empty: a daily report of teaching bookings where the room's door
+  counter saw nobody, e-mailed to the alert topic (ECS strategic question 2.3,
+  demonstrated in the dev account). Child stack of main.yaml.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming
+        Parameters:
+          - ProjectSlug
+          - Environment
+      - Label:
+          default: Inputs from the other stacks
+        Parameters:
+          - KmsKeyArn
+          - AthenaWorkGroupName
+          - AthenaResultsBucketName
+          - CuratedTableBucketName
+          - CuratedNamespaceName
+          - AlertTopicArn
+      - Label:
+          default: Report
+        Parameters:
+          - NudgeScheduleExpression
+          - NudgeExcludedRooms
+          - NudgeTeachingTable
+          - LogRetentionDays
+          - LogLevel
+
+Parameters:
+  ProjectSlug:
+    Type: String
+    Description: Short lowercase name used to build every resource name.
+    AllowedPattern: '^[a-z0-9-]{3,20}$'
+  Environment:
+    Type: String
+    Description: Environment this stack deploys; part of every resource name.
+    AllowedValues:
+      - dev
+      - test
+      - prod
+  KmsKeyArn:
+    Type: String
+    Description: ARN of the shared data key (log group, Athena results, alert topic).
+  AthenaWorkGroupName:
+    Type: String
+    Description: Athena workgroup the report queries through.
+  AthenaResultsBucketName:
+    Type: String
+    Description: Bucket the workgroup writes query results to.
+  CuratedTableBucketName:
+    Type: String
+    Description: Curated table bucket holding the timetable and Smart-Vis tables.
+  CuratedNamespaceName:
+    Type: String
+    Description: Namespace of the curated tables.
+  AlertTopicArn:
+    Type: String
+    Description: Topic the report is published to; its subscribers receive it.
+  NudgeScheduleExpression:
+    Type: String
+    Description: >-
+      When the report runs, as an EventBridge Scheduler expression in UK time.
+      Daily, because each run covers the day before and sends nothing when no
+      booking was empty. Set to DISABLED to stop it without removing the stack.
+    Default: 'cron(0 7 * * ? *)'
+  NudgeExcludedRooms:
+    Type: String
+    Description: >-
+      Comma-separated rooms left out of the report, e.g. a room whose counter is
+      under review.
+    Default: 'NHHB.1.12'
+  NudgeTeachingTable:
+    Type: String
+    Description: Curated table holding the TimeEdit teaching bookings.
+    Default: trial_timetable_teaching
+  LogRetentionDays:
+    Type: Number
+    Description: Days the function's logs are kept.
+    Default: 30
+  LogLevel:
+    Type: String
+    Description: Log level for the function.
+    Default: INFO
+    AllowedValues:
+      - DEBUG
+      - INFO
+      - WARN
+      - ERROR
+
+Conditions:
+  ScheduleEnabled: !Not [!Equals [!Ref NudgeScheduleExpression, 'DISABLED']]
+
+Resources:
+  NudgeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      # Created here so the key and retention apply (see the transform's log
+      # group in engine.yaml). The key policy names this group.
+      LogGroupName: !Sub '/aws/lambda/${ProjectSlug}-${Environment}-booking-nudge'
+      KmsKeyId: !Ref KmsKeyArn
+      RetentionInDays: !Ref LogRetentionDays
+
+  NudgeFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: booking-nudge
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: RunQueries
+                Effect: Allow
+                Action:
+                  - 'athena:StartQueryExecution'
+                  - 'athena:GetQueryExecution'
+                  - 'athena:GetQueryResults'
+                  - 'athena:StopQueryExecution'
+                Resource: !Sub 'arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AthenaWorkGroupName}'
+              # Athena reads the catalog and writes results as the caller.
+              - Sid: ReadCuratedCatalog
+                Effect: Allow
+                Action:
+                  - 'glue:GetCatalog'
+                  - 'glue:GetDatabase'
+                  - 'glue:GetDatabases'
+                  - 'glue:GetTable'
+                  - 'glue:GetTables'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog/s3tablescatalog/${CuratedTableBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/s3tablescatalog/${CuratedTableBucketName}/${CuratedNamespaceName}/*'
+              # No resource-level scoping exists for this action; the Lake
+              # Formation grants below are the effective scope.
+              - Sid: VendCuratedDataCredentials
+                Effect: Allow
+                Action: 'lakeformation:GetDataAccess'
+                Resource: '*'
+              - Sid: WriteQueryResults
+                Effect: Allow
+                Action:
+                  - 's3:GetBucketLocation'
+                  - 's3:ListBucket'
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:AbortMultipartUpload'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${AthenaResultsBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${AthenaResultsBucketName}/*'
+              # Query results and the alert topic are both encrypted with the data key.
+              - Sid: UseDataKey
+                Effect: Allow
+                Action:
+                  - 'kms:Decrypt'
+                  - 'kms:GenerateDataKey'
+                Resource: !Ref KmsKeyArn
+              - Sid: PublishReport
+                Effect: Allow
+                Action: 'sns:Publish'
+                Resource: !Ref AlertTopicArn
+              - Sid: WriteFunctionLogs
+                Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !GetAtt NudgeLogGroup.Arn
+
+  NudgeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectSlug}-${Environment}-booking-nudge'
+      Description: E-mails the previous day's teaching bookings in which the door counter saw nobody.
+      CodeUri: ../lambda/fn-booking-nudge/app
+      Handler: handler.handler
+      # 3.13, not the transform's 3.14: this is a zip package, and sam build
+      # checks for a local interpreter matching the runtime, which in the
+      # pipeline's CodeBuild image (buildspec.yml) is Python 3.13.
+      Runtime: python3.13
+      Architectures:
+        - arm64
+      MemorySize: 256
+      # The Athena query is given 240 s; the rest is the publish and headroom.
+      Timeout: 300
+      Role: !GetAtt NudgeFunctionRole.Arn
+      KmsKeyArn: !Ref KmsKeyArn
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref NudgeLogGroup
+        ApplicationLogLevel: !Ref LogLevel
+      Environment:
+        Variables:
+          ATHENA_WORKGROUP: !Ref AthenaWorkGroupName
+          CURATED_CATALOG: !Sub 's3tablescatalog/${CuratedTableBucketName}'
+          CURATED_NAMESPACE: !Ref CuratedNamespaceName
+          TEACHING_TABLE: !Ref NudgeTeachingTable
+          ALERT_TOPIC_ARN: !Ref AlertTopicArn
+          EXCLUDED_ROOMS: !Ref NudgeExcludedRooms
+          # Kept in step with PROVISIONAL_PERIODS in quicksight/occupancy.py.
+          PROVISIONAL_PERIODS: 'NHHB.1.15:2026-10-14'
+          SEND_WHEN_NONE: 'false'
+          LOG_LEVEL: !Ref LogLevel
+
+  # ---------- Curated-store access ----------
+  # Read-only: DESCRIBE on the namespace, SELECT on its tables.
+  NudgeDatabaseGrant:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt NudgeFunctionRole.Arn
+      Resource:
+        Database:
+          CatalogId: !Sub '${AWS::AccountId}:s3tablescatalog/${CuratedTableBucketName}'
+          Name: !Ref CuratedNamespaceName
+      Permissions:
+        - DESCRIBE
+      PermissionsWithGrantOption: []
+
+  NudgeTableGrant:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt NudgeFunctionRole.Arn
+      Resource:
+        Table:
+          CatalogId: !Sub '${AWS::AccountId}:s3tablescatalog/${CuratedTableBucketName}'
+          DatabaseName: !Ref CuratedNamespaceName
+          TableWildcard: {}
+      Permissions:
+        - SELECT
+        - DESCRIBE
+      PermissionsWithGrantOption: []
+
+  # ---------- Schedule ----------
+  NudgeSchedulerRole:
+    Type: AWS::IAM::Role
+    Condition: ScheduleEnabled
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: invoke-booking-nudge
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'lambda:InvokeFunction'
+                Resource: !GetAtt NudgeFunction.Arn
+
+  NudgeSchedule:
+    Type: AWS::Scheduler::Schedule
+    Condition: ScheduleEnabled
+    Properties:
+      Name: !Sub '${ProjectSlug}-${Environment}-booking-nudge'
+      Description: Runs the booked-but-empty report for the previous day.
+      ScheduleExpression: !Ref NudgeScheduleExpression
+      ScheduleExpressionTimezone: Europe/London
+      FlexibleTimeWindow:
+        Mode: 'OFF'
+      Target:
+        Arn: !GetAtt NudgeFunction.Arn
+        RoleArn: !GetAtt NudgeSchedulerRole.Arn
+        Input: '{}'
+        RetryPolicy:
+          MaximumRetryAttempts: 2
+
+Outputs:
+  NudgeFunctionName:
+    Description: Name of the booked-but-empty report function; invoke with {"date":"YYYY-MM-DD"} for a given day.
+    Value: !Ref NudgeFunction

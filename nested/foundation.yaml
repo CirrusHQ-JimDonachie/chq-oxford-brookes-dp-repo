@@ -92,7 +92,7 @@ Resources:
 
           # CloudWatch Logs does the encrypting for the services that write
           # through it, so the function and the API need no grant of their own.
-          # The encryption context pins the key to these two log groups: any
+          # The encryption context pins the key to these log groups: any
           # other group that is pointed at this key cannot use it.
           - Sid: AllowCloudWatchLogs
             Effect: Allow
@@ -109,6 +109,7 @@ Resources:
               ArnEquals:
                 'kms:EncryptionContext:aws:logs:arn':
                   - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectSlug}-${Environment}-transform'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectSlug}-${Environment}-booking-nudge'
                   - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/apigateway/${ProjectSlug}-${Environment}-read-api'
 
           # DynamoDB reaches the key on behalf of whoever is reading or writing

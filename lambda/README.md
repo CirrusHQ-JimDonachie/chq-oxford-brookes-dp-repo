@@ -9,6 +9,7 @@ it.
 | Handler | Trigger | Timeout | Runtime dependencies |
 | --- | --- | --- | --- |
 | `fn-transform` | S3 object-created notification on the `raw/` prefix of the landing bucket | 300 s | `aws-lambda-powertools`, `pyiceberg`, `pyarrow`, bundled in the package (see `fn-transform/requirements.txt`); no layer |
+| `fn-booking-nudge` | EventBridge Scheduler, daily at 07:00 UK time (`nested/nudge.yaml`) | 300 s | None beyond boto3 in the runtime |
 
 ## Running the checks
 
