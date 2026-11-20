@@ -108,8 +108,18 @@ SES_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${SES_ID}"
 # Wi-Fi devices against door counts per room and hour, from the trial Wi-Fi table.
 WVD_ID="${PREFIX}-wifi-vs-door"
 WVD_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${WVD_ID}"
+# Wi-Fi devices for every room with an access point (the Q Topic's Wi-Fi questions).
+WRM_ID="${PREFIX}-wifi-rooms"
+WRM_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${WRM_ID}"
+# ECS strategic questions (16 Nov 2026): do SMARTviz, TimeEdit and Wi-Fi agree, per room
+# and hour (source-agreement); booked demand across the timetable (booking-demand).
+AGR_ID="${PREFIX}-source-agreement"
+AGR_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${AGR_ID}"
+DEM_ID="${PREFIX}-booking-demand"
+DEM_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${DEM_ID}"
 python3 -I "$(dirname "$0")/occupancy.py" "$TMP" "$DS_ARN" "$OCC_ARN" "$COV_ARN" \
-  "$BVA_ARN" "$SES_ARN" "$WVD_ARN" "s3tablescatalog/$CURATED_BUCKET" "$CURATED_NS"
+  "$BVA_ARN" "$SES_ARN" "$WVD_ARN" "$WRM_ARN" "$AGR_ARN" "$DEM_ARN" \
+  "s3tablescatalog/$CURATED_BUCKET" "$CURATED_NS"
 upsert_dataset "$OCC_ID" --name "Room occupancy readings" --import-mode SPICE \
   --physical-table-map "file://$TMP/occupancy-table.json" \
   --row-level-permission-data-set "file://$TMP/rls.json"
@@ -125,11 +135,18 @@ upsert_dataset "$SES_ID" --name "Bookings and door counts" --import-mode SPICE \
 upsert_dataset "$WVD_ID" --name "Wi-Fi vs door counts by hour" --import-mode SPICE \
   --physical-table-map "file://$TMP/wifi-table.json" \
   --row-level-permission-data-set "file://$TMP/rls.json"
-hourly_refresh "$OCC_ID"
-hourly_refresh "$COV_ID"
-hourly_refresh "$BVA_ID"
-hourly_refresh "$SES_ID"
-hourly_refresh "$WVD_ID"
+upsert_dataset "$WRM_ID" --name "Wi-Fi devices by room" --import-mode SPICE \
+  --physical-table-map "file://$TMP/wifi-rooms-table.json" \
+  --row-level-permission-data-set "file://$TMP/rls.json"
+upsert_dataset "$AGR_ID" --name "Source agreement by hour" --import-mode SPICE \
+  --physical-table-map "file://$TMP/agreement-table.json" \
+  --row-level-permission-data-set "file://$TMP/rls.json"
+upsert_dataset "$DEM_ID" --name "Booking demand by hour" --import-mode SPICE \
+  --physical-table-map "file://$TMP/demand-table.json" \
+  --row-level-permission-data-set "file://$TMP/rls.json"
+for id in "$OCC_ID" "$COV_ID" "$BVA_ID" "$SES_ID" "$WVD_ID" "$WRM_ID" "$AGR_ID" "$DEM_ID"; do
+  hourly_refresh "$id"
+done
 
 # --- Dashboards ----------------------------------------------------------------------
 # The two environmental dashboards on the synthetic BMS readings (Building Environmental
@@ -151,9 +168,12 @@ upsert_dashboard() {
 # Smart-Vis occupancy: the SoW's occupancy heatmap, capacity gauge and zone breakdown,
 # a forecast, and a data-quality sheet with coverage.
 upsert_dashboard "${PREFIX}-room-occupancy" "Room Occupancy" "$TMP/occupancy-dashboard.json"
+# ECS strategic questions 1.1 and 1.2 (do the sources agree) and 3.1 (booking pressure).
+upsert_dashboard "${PREFIX}-source-agreement" "Data Source Agreement" "$TMP/agreement-dashboard.json"
+upsert_dashboard "${PREFIX}-booking-pressure" "Booking Pressure" "$TMP/demand-dashboard.json"
 
 # --- Q Topic (natural-language model) -------------------------------------------------
-# The SoW's one Q Topic, modelled on the Smart-Vis occupancy, coverage and booking datasets
+# The SoW's one Q Topic, modelled on the Smart-Vis occupancy, coverage, booking and Wi-Fi datasets
 # (occupancy.py writes topic.json). The topic id keeps its first name; the synthetic BMS data is no longer in it.
 TOPIC_ID="${PREFIX}-building-environmental"
 if qs describe-topic --topic-id "$TOPIC_ID" >/dev/null 2>&1; then
@@ -174,12 +194,12 @@ qs update-topic-permissions --topic-id "$TOPIC_ID" --grant-permissions "[{\"Prin
 # clock, and drop the schedule of any dataset no longer in the Topic.
 scheduled=$(qs list-topic-refresh-schedules --topic-id "$TOPIC_ID" --query 'RefreshSchedules[].DatasetArn' --output text 2>/dev/null || true)
 for arn in $scheduled; do
-  case " $OCC_ARN $COV_ARN $BVA_ARN $SES_ARN " in
+  case " $OCC_ARN $COV_ARN $BVA_ARN $SES_ARN $WRM_ARN " in
     *" $arn "*) ;;
     *) qs delete-topic-refresh-schedule --topic-id "$TOPIC_ID" --dataset-id "${arn##*/}" --query Status --output text ;;
   esac
 done
-for arn in "$OCC_ARN" "$COV_ARN" "$BVA_ARN" "$SES_ARN"; do
+for arn in "$OCC_ARN" "$COV_ARN" "$BVA_ARN" "$SES_ARN" "$WRM_ARN"; do
   case " $scheduled " in
     *" $arn "*) ;;
     *) qs create-topic-refresh-schedule --topic-id "$TOPIC_ID" --dataset-arn "$arn" \

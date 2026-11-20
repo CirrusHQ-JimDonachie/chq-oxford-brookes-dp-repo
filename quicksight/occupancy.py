@@ -7,12 +7,16 @@ build.sh calls this, then passes the files to the QuickSight API. It writes:
 - booked-table.json, sessions-table.json: the booked-against-actual datasets, joining
   the TimeEdit timetable to the door counters;
 - wifi-table.json: Wi-Fi devices against door counts per room and hour (trial Wi-Fi);
-- occupancy-dashboard.json: the Room Occupancy dashboard;
-- topic.json: the Q Topic, modelled on the occupancy, coverage and booking datasets.
+- wifi-rooms-table.json: Wi-Fi devices for every room with an access point, per hour;
+- agreement-table.json, demand-table.json: the Data Source Agreement and Booking
+  Pressure datasets (ECS strategic questions 1.1, 1.2 and 3.1);
+- occupancy-dashboard.json, agreement-dashboard.json, demand-dashboard.json: dashboards;
+- topic.json: the Q Topic, modelled on the occupancy, coverage, booking and Wi-Fi datasets.
 
     python3 quicksight/occupancy.py <out dir> <data source arn> <occupancy dataset arn> \
         <coverage dataset arn> <booked dataset arn> <sessions dataset arn> \
-        <wifi dataset arn> <curated catalog> <namespace>
+        <wifi dataset arn> <wifi rooms dataset arn> <agreement dataset arn> \
+        <demand dataset arn> <curated catalog> <namespace>
 """
 
 import json
@@ -24,7 +28,7 @@ HERE = Path(__file__).resolve().parent
 OCCUPANCY_COLUMNS = [
     ("room_id", "STRING"), ("room_code", "STRING"), ("space_name", "STRING"),
     ("floor", "STRING"), ("room_type", "STRING"), ("department", "STRING"),
-    ("archibus_rooms", "STRING"), ("sensor_type", "STRING"),
+    ("room_use", "STRING"), ("archibus_rooms", "STRING"), ("sensor_type", "STRING"),
     ("local_at", "DATETIME"), ("reading_at_utc", "DATETIME"), ("local_date", "DATETIME"),
     ("weekday", "STRING"), ("hour_of_day", "INTEGER"), ("core_hours", "STRING"),
     ("people_count", "DECIMAL"), ("people_count_scheduled", "DECIMAL"),
@@ -63,6 +67,29 @@ WIFI_COLUMNS = [
     ("hour_of_day", "INTEGER"), ("core_hours", "STRING"), ("slots", "INTEGER"),
     ("people_sum", "DECIMAL"), ("devices_sum", "INTEGER"), ("people_in_use_slots", "INTEGER"),
     ("wifi_in_use_slots", "INTEGER"), ("agree_slots", "INTEGER"),
+]
+WIFI_ROOMS_COLUMNS = [
+    ("room_id", "STRING"), ("floor", "STRING"), ("room_type", "STRING"), ("room_use", "STRING"),
+    ("timetabled", "STRING"), ("local_date", "DATETIME"), ("weekday", "STRING"),
+    ("hour_of_day", "INTEGER"), ("core_hours", "STRING"), ("slots", "INTEGER"),
+    ("devices_sum", "INTEGER"), ("devices_peak", "INTEGER"), ("wifi_in_use_slots", "INTEGER"),
+    ("booked_slots", "INTEGER"), ("booked_wifi_slots", "INTEGER"),
+]
+AGREEMENT_COLUMNS = [
+    ("room_id", "STRING"), ("floor", "STRING"), ("room_type", "STRING"), ("capacity", "INTEGER"),
+    ("local_date", "DATETIME"), ("hour_at", "DATETIME"), ("weekday", "STRING"),
+    ("hour_of_day", "INTEGER"), ("core_hours", "STRING"), ("door_slots", "INTEGER"),
+    ("booked_slots", "INTEGER"), ("door_peak", "DECIMAL"), ("wifi_devices_avg", "DECIMAL"),
+    ("wifi_status", "STRING"), ("situation", "STRING"), ("agreement", "STRING"),
+    ("possible_explanation", "STRING"),
+]
+DEMAND_COLUMNS = [
+    ("room_id", "STRING"), ("floor", "STRING"), ("room_type", "STRING"), ("capacity", "INTEGER"),
+    ("has_door_counter", "STRING"), ("local_date", "DATETIME"), ("weekday", "STRING"),
+    ("hour_of_day", "INTEGER"), ("core_hours", "STRING"), ("slots", "INTEGER"),
+    ("booked_slots", "INTEGER"), ("teaching_slots", "INTEGER"), ("door_slots", "INTEGER"),
+    ("booked_observed_slots", "INTEGER"), ("door_used_slots", "INTEGER"),
+    ("door_peak", "DECIMAL"), ("people_sum", "DECIMAL"),
 ]
 # Room periods whose Smart-Vis readings Oxford Brookes and SMARTviz could not verify:
 # kept as raw counts, flagged Provisional, and left out of every derived measure.
@@ -728,6 +755,353 @@ def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_arn):
     }
 
 
+# --- Data Source Agreement and Booking Pressure dashboards ----------------------------
+# The two dashboards ECS asked for after their 16 Nov 2026 meeting: whether SMARTviz,
+# TimeEdit and Wi-Fi agree (strategic questions 1.1 and 1.2), and when bookings press
+# on the estate's capacity (3.1).
+
+def fixed_filter(filter_id, ds, column, values, sheet_id, visual_ids=None):
+    """A fixed category filter on one dataset, for the whole sheet or some visuals."""
+    scope = ({"SheetId": sheet_id, "Scope": "SELECTED_VISUALS", "VisualIds": visual_ids}
+             if visual_ids else {"SheetId": sheet_id, "Scope": "ALL_VISUALS"})
+    return {"FilterGroupId": f"fg-{filter_id}", "CrossDataset": "SINGLE_DATASET", "Status": "ENABLED",
+            "Filters": [{"CategoryFilter": {
+                "FilterId": filter_id, "Column": col(ds, column),
+                "Configuration": {"FilterListConfiguration": {
+                    "MatchOperator": "CONTAINS", "CategoryValues": values}}}}],
+            "ScopeConfiguration": {"SelectedSheets": {"SheetVisualScopingConfigurations": [scope]}}}
+
+
+def picker_filter(filter_id, ds, column, sheet_id, visual_ids):
+    """A category filter with nothing fixed, driven by a dropdown control."""
+    return {"FilterGroupId": f"fg-{filter_id}", "CrossDataset": "SINGLE_DATASET", "Status": "ENABLED",
+            "Filters": [{"CategoryFilter": {
+                "FilterId": filter_id, "Column": col(ds, column),
+                "Configuration": {"FilterListConfiguration": {
+                    "MatchOperator": "CONTAINS", "SelectAllOptions": "FILTER_ALL_VALUES",
+                    "NullOption": "NON_NULLS_ONLY"}}}}],
+            "ScopeConfiguration": {"SelectedSheets": {"SheetVisualScopingConfigurations": [
+                {"SheetId": sheet_id, "Scope": "SELECTED_VISUALS", "VisualIds": visual_ids}]}}}
+
+
+def controls(suffix, *extra):
+    return [{"DateTimePicker": {"FilterControlId": f"ctl-date-{suffix}", "Title": "Dates",
+                                "SourceFilterId": f"f-date-{suffix}", "Type": "DATE_RANGE"}},
+            {"Dropdown": {"FilterControlId": f"ctl-room-{suffix}", "Title": "Room",
+                          "SourceFilterId": f"f-room-{suffix}", "Type": "MULTI_SELECT"}},
+            *[{"Dropdown": {"FilterControlId": f"ctl-{fid}", "Title": label,
+                            "SourceFilterId": fid, "Type": "MULTI_SELECT"}} for fid, label in extra]]
+
+
+def count_of(field_id, ds, column):
+    return {"CategoricalMeasureField": {"FieldId": field_id, "Column": col(ds, column),
+                                        "AggregationFunction": "COUNT"}}
+
+
+# Situations in the order the agreement SQL tests them, with colours that put the two
+# agreeing situations in greys and the disagreements in warm colours.
+SITUATIONS = [
+    ("Booked and in use", "#A4D233"),
+    ("Not booked and empty", "#DAD9D9"),
+    ("Booked, nobody detected", "#D9534F"),
+    ("Booked, Wi-Fi active, door count zero", "#8E44AD"),
+    ("Not booked, people counted", "#F0AD4E"),
+    ("Door count zero, Wi-Fi active", "#5BC0DE"),
+    ("Door counter readings missing", "#454142"),
+]
+WIFI_NOTE = "Wi-Fi covers 21 Sep to 6 Nov only (trial export); outside it, hours are classified on bookings and door counts."
+
+
+def situation_palette(field_id):
+    return {"ColorMap": [{"Element": {"FieldId": field_id, "FieldValue": name}, "Color": colour}
+                         for name, colour in SITUATIONS]}
+
+
+def palettes_inside(definition):
+    """Written beside ChartConfiguration for readability; the API wants VisualPalette inside it."""
+    for sheet in definition["Sheets"]:
+        for visual in sheet["Visuals"]:
+            for body in visual.values():
+                if "VisualPalette" in body:
+                    body["ChartConfiguration"]["VisualPalette"] = body.pop("VisualPalette")
+    return definition
+
+
+def agreement_dashboard(agreement_arn):
+    agr = "agr"
+    sheet = {
+        "SheetId": "agree", "Name": "Do the sources agree?",
+        "FilterControls": controls("a", ("f-situation", "Situation")),
+        "Visuals": [
+            kpi("a-agree", "Hours where the sources agree",
+                measure("a-agree-v", agr, "agree_pct", fmt=PCT),
+                "Booked and in use, or not booked and empty; of hours with door-counter readings, weekdays 08:00-18:00"),
+            kpi("a-unused", "Booked, nobody detected",
+                measure("a-unused-v", agr, "Booked, nobody detected (hours)", fmt=number_format(0)),
+                "Room-hours booked for at least half the hour with nobody counted and Wi-Fi quiet or absent"),
+            kpi("a-suspect", "Door count zero, Wi-Fi active",
+                measure("a-suspect-v", agr, "Suspect zero (hours)", fmt=number_format(0)),
+                "Room-hours with nobody counted but 5 or more Wi-Fi devices on average, booked or not"),
+            kpi("a-missing", "Readings missing",
+                measure("a-missing-v", agr, "Readings missing (hours)", fmt=number_format(0)),
+                "Room-hours with fewer than half their door-counter readings"),
+            {"BarChartVisual": {"VisualId": "a-rooms", **title(
+                "Situations by room",
+                "Share of room-hours, weekdays 08:00-18:00. " + WIFI_NOTE),
+                "ChartConfiguration": {"Orientation": "HORIZONTAL", "BarsArrangement": "STACKED_PERCENT",
+                    "FieldWells": {"BarChartAggregatedFieldWells": {
+                        "Category": [dim("ar-room", agr, "room_id")],
+                        "Values": [count_of("ar-n", agr, "situation")],
+                        "Colors": [dim("ar-sit", agr, "situation")]}},
+                    "SortConfiguration": {"CategorySort": [
+                        {"FieldSort": {"FieldId": "ar-room", "Direction": "ASC"}}]},
+                    "CategoryLabelOptions": labels(agr, ("ar-room", "room_id", "Room")),
+                    "ValueLabelOptions": labels(agr, ("ar-n", "situation", "Share of room-hours")),
+                    "ColorLabelOptions": labels(agr, ("ar-sit", "situation", "Situation")),
+                    "Legend": {"Visibility": "VISIBLE", "Title": {"Visibility": "HIDDEN"}},
+                    "Tooltip": tooltip(("ar-room", "Room"), ("ar-sit", "Situation"), ("ar-n", "Room-hours"))},
+                "VisualPalette": situation_palette("ar-sit")}},
+            {"BarChartVisual": {"VisualId": "a-days", **title(
+                "Situations by day",
+                "Room-hours, weekdays 08:00-18:00. Outages show as dark bars"),
+                "ChartConfiguration": {"Orientation": "VERTICAL", "BarsArrangement": "STACKED",
+                    "FieldWells": {"BarChartAggregatedFieldWells": {
+                        "Category": [date_dim("ad-day", agr, "local_date")],
+                        "Values": [count_of("ad-n", agr, "situation")],
+                        "Colors": [dim("ad-sit", agr, "situation")]}},
+                    "CategoryLabelOptions": labels(agr, ("ad-day", "local_date", "Date")),
+                    "ValueLabelOptions": labels(agr, ("ad-n", "situation", "Room-hours")),
+                    "ColorLabelOptions": labels(agr, ("ad-sit", "situation", "Situation")),
+                    "Legend": {"Visibility": "HIDDEN"},
+                    "Tooltip": tooltip(("ad-day", "Date"), ("ad-sit", "Situation"), ("ad-n", "Room-hours"))},
+                "VisualPalette": situation_palette("ad-sit")}},
+            {"HeatMapVisual": {"VisualId": "a-heat", **title(
+                "Booked hours with nobody detected, by weekday and hour",
+                "Room-hours booked for at least half the hour where nobody was counted, Wi-Fi quiet or absent"),
+                "ChartConfiguration": {
+                    "FieldWells": {"HeatMapAggregatedFieldWells": {
+                        "Rows": [dim("ah-day", agr, "weekday")],
+                        "Columns": [{"NumericalDimensionField": {
+                            "FieldId": "ah-hour", "Column": col(agr, "hour_of_day")}}],
+                        "Values": [measure("ah-val", agr, "Booked, nobody detected (hours)", fmt=number_format(0))]}},
+                    "RowLabelOptions": labels(agr, ("ah-day", "weekday", "Weekday")),
+                    "ColumnLabelOptions": labels(agr, ("ah-hour", "hour_of_day", "Hour starting")),
+                    "Legend": {"Visibility": "VISIBLE", "Title": {"Visibility": "VISIBLE", "CustomLabel": "Room-hours"}},
+                    "Tooltip": tooltip(("ah-day", "Weekday"), ("ah-hour", "Hour starting"), ("ah-val", "Room-hours"))}}},
+            {"TableVisual": {"VisualId": "a-table", **title(
+                "Exceptions to investigate",
+                "Every room-hour where the sources disagree or readings are missing, weekdays 08:00-18:00; "
+                "use the Situation control to narrow the list"),
+                "ChartConfiguration": {
+                    "FieldWells": {"TableUnaggregatedFieldWells": {"Values": [
+                        {"FieldId": "at-hour", "Column": col(agr, "hour_at")},
+                        {"FieldId": "at-room", "Column": col(agr, "room_id")},
+                        {"FieldId": "at-sit", "Column": col(agr, "situation")},
+                        {"FieldId": "at-bk", "Column": col(agr, "Booked minutes")},
+                        {"FieldId": "at-rd", "Column": col(agr, "door_slots")},
+                        {"FieldId": "at-peak", "Column": col(agr, "door_peak"),
+                         "FormatConfiguration": {"NumberFormatConfiguration": number_format(0, na=True)}},
+                        {"FieldId": "at-wifi", "Column": col(agr, "wifi_devices_avg"),
+                         "FormatConfiguration": {"NumberFormatConfiguration": number_format(1, na=True)}},
+                        {"FieldId": "at-ws", "Column": col(agr, "wifi_status")},
+                        {"FieldId": "at-why", "Column": col(agr, "possible_explanation")},
+                    ]}},
+                    "SortConfiguration": {"RowSort": [{"FieldSort": {"FieldId": "at-hour", "Direction": "DESC"}}]},
+                    "FieldOptions": {"SelectedFieldOptions": [
+                        {"FieldId": "at-hour", "CustomLabel": "Hour"},
+                        {"FieldId": "at-room", "CustomLabel": "Room"},
+                        {"FieldId": "at-sit", "CustomLabel": "Situation"},
+                        {"FieldId": "at-bk", "CustomLabel": "Booked minutes"},
+                        {"FieldId": "at-rd", "CustomLabel": "Readings (of 12)"},
+                        {"FieldId": "at-peak", "CustomLabel": "Peak door count"},
+                        {"FieldId": "at-wifi", "CustomLabel": "Wi-Fi devices (avg)"},
+                        {"FieldId": "at-ws", "CustomLabel": "Wi-Fi data"},
+                        {"FieldId": "at-why", "CustomLabel": "Possible explanation"},
+                    ]}}}},
+        ],
+        "Layouts": grid(("a-agree", 9, 6), ("a-unused", 9, 6), ("a-suspect", 9, 6), ("a-missing", 9, 6),
+                        ("a-rooms", 18, 14), ("a-heat", 18, 14), ("a-days", 36, 10), ("a-table", 36, 16)),
+    }
+    return {
+        "DataSetIdentifierDeclarations": [{"Identifier": agr, "DataSetArn": agreement_arn}],
+        "CalculatedFields": [
+            {"DataSetIdentifier": agr, "Name": "agree_pct",
+             "Expression": "sum(ifelse({agreement} = 'Sources agree', 1, 0)) / "
+                           "sum(ifelse({agreement} = 'Missing data', 0, 1)) * 100"},
+            {"DataSetIdentifier": agr, "Name": "Booked, nobody detected (hours)",
+             "Expression": "sum(ifelse({situation} = 'Booked, nobody detected', 1, 0))"},
+            {"DataSetIdentifier": agr, "Name": "Suspect zero (hours)",
+             "Expression": "sum(ifelse({situation} = 'Booked, Wi-Fi active, door count zero' OR "
+                           "{situation} = 'Door count zero, Wi-Fi active', 1, 0))"},
+            {"DataSetIdentifier": agr, "Name": "Readings missing (hours)",
+             "Expression": "sum(ifelse({situation} = 'Door counter readings missing', 1, 0))"},
+            {"DataSetIdentifier": agr, "Name": "Booked minutes", "Expression": "{booked_slots} * 5"},
+        ],
+        "FilterGroups": [
+            *sheet_filters("agree", "f-date-a", "f-room-a", agr),
+            fixed_filter("f-agree-core", agr, "core_hours", ["Yes"], "agree"),
+            fixed_filter("f-agree-exceptions", agr, "agreement", ["Sources disagree", "Missing data"],
+                         "agree", ["a-table"]),
+            picker_filter("f-situation", agr, "situation", "agree", ["a-table"]),
+        ],
+        "Sheets": [sheet],
+    }
+
+
+FILL_BANDS = "Peak fill"
+
+
+def demand_dashboard(demand_arn, session_arn):
+    dem, ses = "dem", "ses"
+    booked_pct = "Time booked"
+    booked_counted = "Booked (rooms with counters)"
+    in_use_counted = "In use (rooms with counters)"
+    sheet = {
+        "SheetId": "pressure", "Name": "Booking pressure",
+        "FilterControls": controls("d", ("f-dtype", "Room type")),
+        "Visuals": [
+            kpi("d-booked", "Time booked", measure("d-booked-v", dem, booked_pct, fmt=PCT),
+                "Share of room time booked in TimeEdit, NHHB timetabled rooms, weekdays 08:00-18:00, "
+                "selected dates; the timetable runs to Aug 2027, the sensors to 12 Nov 2026"),
+            kpi("d-peak", "Time in use", measure("d-peak-v", dem, in_use_counted, fmt=PCT),
+                "Share of room time with anyone counted, rooms with door counters, weekdays 08:00-18:00"),
+            kpi("d-full", "Bookings 75% full or more",
+                measure("d-full-v", ses, "full_bookings_pct", fmt=PCT),
+                "Used bookings whose peak door count reached 75% of the room's capacity"),
+            kpi("d-small", "Bookings under 25% full",
+                measure("d-small-v", ses, "small_bookings_pct", fmt=PCT),
+                "Used bookings whose peak door count stayed under 25% of capacity: a smaller room might do"),
+            {"HeatMapVisual": {"VisualId": "d-heat", **title(
+                "Share of room time booked, by weekday and hour",
+                "All NHHB rooms in the TimeEdit timetable, UK local time"),
+                "ChartConfiguration": {
+                    "FieldWells": {"HeatMapAggregatedFieldWells": {
+                        "Rows": [dim("dh-day", dem, "weekday")],
+                        "Columns": [{"NumericalDimensionField": {
+                            "FieldId": "dh-hour", "Column": col(dem, "hour_of_day")}}],
+                        "Values": [measure("dh-val", dem, booked_pct, fmt=PCT)]}},
+                    "RowLabelOptions": labels(dem, ("dh-day", "weekday", "Weekday")),
+                    "ColumnLabelOptions": labels(dem, ("dh-hour", "hour_of_day", "Hour starting")),
+                    "Legend": {"Visibility": "VISIBLE", "Title": {"Visibility": "VISIBLE", "CustomLabel": "% booked"}},
+                    "Tooltip": tooltip(("dh-day", "Weekday"), ("dh-hour", "Hour starting"), ("dh-val", booked_pct))}}},
+            {"LineChartVisual": {"VisualId": "d-week", **title(
+                "Time booked by week, through the academic year",
+                "Weekdays 08:00-18:00; the timetable runs to August 2027"),
+                "ChartConfiguration": {
+                    "FieldWells": {"LineChartAggregatedFieldWells": {
+                        "Category": [date_dim("dw-wk", dem, "local_date", "WEEK")],
+                        "Values": [measure("dw-val", dem, booked_pct, fmt=PCT)], "Colors": []}},
+                    "XAxisLabelOptions": labels(dem, ("dw-wk", "local_date", "Week starting")),
+                    "PrimaryYAxisLabelOptions": labels(dem, ("dw-val", booked_pct, "% of room time booked")),
+                    "Tooltip": tooltip(("dw-wk", "Week starting"), ("dw-val", booked_pct))}}},
+            {"LineChartVisual": {"VisualId": "d-hour", **title(
+                "Booked against observed, by hour of the day",
+                "Monday to Friday, rooms with door counters, only times with a reading"),
+                "ChartConfiguration": {
+                    "FieldWells": {"LineChartAggregatedFieldWells": {
+                        "Category": [{"NumericalDimensionField": {"FieldId": "dl-hour",
+                                                                  "Column": col(dem, "hour_of_day")}}],
+                        "Values": [measure("dl-b", dem, booked_counted, fmt=PCT),
+                                   measure("dl-u", dem, in_use_counted, fmt=PCT)], "Colors": []}},
+                    "XAxisLabelOptions": labels(dem, ("dl-hour", "hour_of_day", "Hour starting")),
+                    "PrimaryYAxisLabelOptions": labels(dem, ("dl-b", booked_counted, "% of room time")),
+                    "Legend": {"Visibility": "VISIBLE", "Title": {"Visibility": "HIDDEN"}},
+                    "Tooltip": tooltip(("dl-hour", "Hour starting"), ("dl-b", booked_counted),
+                                       ("dl-u", in_use_counted))}}},
+            {"BarChartVisual": {"VisualId": "d-type", **title(
+                "Time booked by room type", "Weekdays 08:00-18:00"),
+                "ChartConfiguration": {"Orientation": "HORIZONTAL", "FieldWells": {
+                    "BarChartAggregatedFieldWells": {
+                        "Category": [dim("dt-type", dem, "room_type")],
+                        "Values": [measure("dt-val", dem, booked_pct, fmt=PCT)]}},
+                    "CategoryLabelOptions": labels(dem, ("dt-type", "room_type", "Room type")),
+                    "ValueLabelOptions": labels(dem, ("dt-val", booked_pct, "% of room time booked")),
+                    "Tooltip": tooltip(("dt-type", "Room type"), ("dt-val", booked_pct))}}},
+            {"BarChartVisual": {"VisualId": "d-fit", **title(
+                "How full booked rooms get",
+                "Used bookings by the peak door count as a share of capacity"),
+                "ChartConfiguration": {"Orientation": "HORIZONTAL", "BarsArrangement": "STACKED_PERCENT",
+                    "FieldWells": {"BarChartAggregatedFieldWells": {
+                        "Category": [dim("df-room", ses, "room_id")],
+                        "Values": [count_of("df-n", ses, "booking_id")],
+                        "Colors": [dim("df-band", ses, FILL_BANDS)]}},
+                    "SortConfiguration": {"CategorySort": [
+                        {"FieldSort": {"FieldId": "df-room", "Direction": "ASC"}}],
+                        "ColorSort": [{"FieldSort": {"FieldId": "df-band", "Direction": "ASC"}}]},
+                    "CategoryLabelOptions": labels(ses, ("df-room", "room_id", "Room")),
+                    "ValueLabelOptions": labels(ses, ("df-n", "booking_id", "Share of bookings")),
+                    "ColorLabelOptions": labels(ses, ("df-band", FILL_BANDS, "Peak fill")),
+                    "Legend": {"Visibility": "VISIBLE", "Title": {"Visibility": "HIDDEN"}},
+                    "Tooltip": tooltip(("df-room", "Room"), ("df-band", "Peak fill"), ("df-n", "Bookings"))},
+                "VisualPalette": {"ColorMap": [
+                    {"Element": {"FieldId": "df-band", "FieldValue": v}, "Color": c} for v, c in (
+                        ("1 Under 25%", "#D9534F"), ("2 25-50%", "#F0AD4E"),
+                        ("3 50-75%", "#A4D233"), ("4 75% or more", "#5B8C1A"))]}}},
+            {"TableVisual": {"VisualId": "d-rooms", **title(
+                "Room size against attendance",
+                "Used bookings: a room whose bookings rarely pass a third of capacity may be larger than its activities need"),
+                "ChartConfiguration": {
+                    "FieldWells": {"TableAggregatedFieldWells": {
+                        "GroupBy": [dim("dr-room", ses, "room_id")],
+                        "Values": [measure("dr-cap", ses, "capacity", "MAX", number_format(0)),
+                                   count_of("dr-n", ses, "booking_id"),
+                                   measure("dr-peak", ses, "peak_people", "AVERAGE", ONE_DP),
+                                   measure("dr-pct", ses, "peak_pct_capacity", "AVERAGE", PCT),
+                                   measure("dr-small", ses, "small_bookings_pct", fmt=PCT)]}},
+                    "SortConfiguration": {"RowSort": [{"FieldSort": {"FieldId": "dr-pct", "Direction": "ASC"}}]},
+                    "FieldOptions": {"SelectedFieldOptions": [
+                        {"FieldId": "dr-room", "CustomLabel": "Room"},
+                        {"FieldId": "dr-cap", "CustomLabel": "Capacity"},
+                        {"FieldId": "dr-n", "CustomLabel": "Used bookings"},
+                        {"FieldId": "dr-peak", "CustomLabel": "Average peak count"},
+                        {"FieldId": "dr-pct", "CustomLabel": "Average peak % of capacity"},
+                        {"FieldId": "dr-small", "CustomLabel": "Under 25% full"},
+                    ]}}}},
+        ],
+        "Layouts": grid(("d-booked", 9, 6), ("d-peak", 9, 6), ("d-full", 9, 6), ("d-small", 9, 6),
+                        ("d-heat", 36, 10), ("d-week", 18, 10), ("d-hour", 18, 10),
+                        ("d-type", 12, 14), ("d-fit", 24, 14), ("d-rooms", 36, 12)),
+    }
+    return {
+        "DataSetIdentifierDeclarations": [{"Identifier": dem, "DataSetArn": demand_arn},
+                                          {"Identifier": ses, "DataSetArn": session_arn}],
+        "CalculatedFields": [
+            {"DataSetIdentifier": dem, "Name": booked_pct,
+             "Expression": "sum({booked_slots}) / sum({slots}) * 100"},
+            {"DataSetIdentifier": dem, "Name": booked_counted,
+             "Expression": "sum({booked_observed_slots}) / sum({door_slots}) * 100"},
+            {"DataSetIdentifier": dem, "Name": in_use_counted,
+             "Expression": "sum({door_used_slots}) / sum({door_slots}) * 100"},
+            {"DataSetIdentifier": ses, "Name": FILL_BANDS,
+             "Expression": "ifelse({peak_pct_capacity} < 25, '1 Under 25%', {peak_pct_capacity} < 50, '2 25-50%', "
+                           "{peak_pct_capacity} < 75, '3 50-75%', '4 75% or more')"},
+            {"DataSetIdentifier": ses, "Name": "full_bookings_pct",
+             "Expression": "sum(ifelse({peak_pct_capacity} >= 75, 1, 0)) / count({booking_id}) * 100"},
+            {"DataSetIdentifier": ses, "Name": "small_bookings_pct",
+             "Expression": "sum(ifelse({peak_pct_capacity} < 25, 1, 0)) / count({booking_id}) * 100"},
+        ],
+        "FilterGroups": [
+            *sheet_filters("pressure", "f-date-d", "f-room-d", dem),
+            fixed_filter("f-d-core", dem, "core_hours", ["Yes"], "pressure",
+                         ["d-booked", "d-peak", "d-week", "d-type"]),
+            fixed_filter("f-d-weekdays", dem, "weekday", ["1 Mon", "2 Tue", "3 Wed", "4 Thu", "5 Fri"],
+                         "pressure", ["d-hour", "d-heat"]),
+            fixed_filter("f-d-counted", dem, "has_door_counter", ["Yes"], "pressure", ["d-peak", "d-hour"]),
+            fixed_filter("f-d-used", ses, "outcome", ["Used"], "pressure", ["d-full", "d-small", "d-fit", "d-rooms"]),
+            {"FilterGroupId": "fg-f-dtype", "CrossDataset": "SINGLE_DATASET", "Status": "ENABLED",
+             "Filters": [{"CategoryFilter": {
+                 "FilterId": "f-dtype", "Column": col(dem, "room_type"),
+                 "Configuration": {"FilterListConfiguration": {
+                     "MatchOperator": "CONTAINS", "SelectAllOptions": "FILTER_ALL_VALUES",
+                     "NullOption": "NON_NULLS_ONLY"}}}}],
+             "ScopeConfiguration": {"SelectedSheets": {"SheetVisualScopingConfigurations": [
+                 {"SheetId": "pressure", "Scope": "SELECTED_VISUALS",
+                  "VisualIds": ["d-booked", "d-peak", "d-heat", "d-week", "d-hour", "d-type"]}]}}},
+        ],
+        "Sheets": [sheet],
+    }
+
+
 # --- Q Topic -------------------------------------------------------------------------
 
 def dimension(name, friendly, description, synonyms, **extra):
@@ -750,15 +1124,43 @@ def hidden(*names):
 PERCENT_FORMAT = {"DisplayFormat": "NUMBER", "DisplayFormatOptions": {
     "FractionDigits": 1, "Suffix": "%"}}
 
-ROOM_SYNONYMS = ["room", "space", "location", "room id", "NHHB room", "teaching room"]
+ROOM_SYNONYMS = ["room", "space", "location", "room id", "NHHB room"]
+
+# Archibus room types in Oxford Brookes' own words (from their Q question set glossary).
+ROOM_TYPE_VALUES = [
+    {"CellValue": "DINING", "Synonyms": ["cafe", "café", "canteen", "dining", "restaurant"]},
+    {"CellValue": "COMPUTERS", "Synonyms": ["computer room", "computer lab", "PC lab", "IT room"]},
+    {"CellValue": "LECTURE", "Synonyms": ["lecture theatre", "lecture hall", "auditorium"]},
+    {"CellValue": "TEACHING", "Synonyms": ["classroom", "seminar room"]},
+    {"CellValue": "MEETING", "Synonyms": ["meeting room"]},
+    {"CellValue": "OFFICE", "Synonyms": ["office"]},
+    {"CellValue": "SOC SPACE", "Synonyms": ["social space", "social learning space", "social area", "study space"]},
+    {"CellValue": "RESRCE T&L", "Synonyms": ["teaching and learning resource", "digital theatre"]},
+    {"CellValue": "WRKSHOP", "Synonyms": ["workshop"]},
+    {"CellValue": "LAB", "Synonyms": ["lab", "laboratory"]},
+    {"CellValue": "STUDIO", "Synonyms": ["studio"]},
+    {"CellValue": "ATRIUM", "Synonyms": ["atrium", "foyer"]},
+]
+
+
+def room_type_dimension(description="Archibus room type, e.g. COMPUTERS, LECTURE, MEETING, DINING (the cafe)."):
+    return dimension("room_type", "Room type", description,
+                     ["type of room", "room category", "space type"], CellValueSynonyms=ROOM_TYPE_VALUES)
+
+
+ROOM_USE = dimension(
+    "room_use", "Room use", "Archibus room use: Teaching (timetabled teaching space), Support or Research.",
+    ["use", "teaching space", "room use"],
+    CellValueSynonyms=[{"CellValue": "Teaching", "Synonyms": ["teaching rooms", "teaching room", "teaching space",
+                                                             "teaching spaces"]}])
+ONE_DP_FORMAT = {"DisplayFormat": "NUMBER", "DisplayFormatOptions": {"FractionDigits": 1}}
 
 
 def topic_calc(name, description, expression, synonyms, percent=True):
     field = {"CalculatedFieldName": name, "CalculatedFieldDescription": description,
              "Expression": expression, "CalculatedFieldSynonyms": synonyms,
-             "IsIncludedInTopic": True, "ColumnDataRole": "MEASURE", "NonAdditive": True}
-    if percent:
-        field["DefaultFormatting"] = PERCENT_FORMAT
+             "IsIncludedInTopic": True, "ColumnDataRole": "MEASURE", "NonAdditive": True,
+             "DefaultFormatting": PERCENT_FORMAT if percent else ONE_DP_FORMAT}
     return field
 
 
@@ -766,7 +1168,7 @@ CORE_HOURS = dimension("core_hours", "Core hours", "Yes for weekdays 08:00 to 18
                        ["working hours", "teaching hours", "office hours", "daytime"])
 
 
-def topic(occupancy_arn, coverage_arn, booked_arn, session_arn):
+def topic(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_rooms_arn):
     occupancy_columns = [
         dimension("room_id", "Room", "Room, e.g. NHHB.2.14 (building NHHB, floor 2, room 14).",
                   ROOM_SYNONYMS),
@@ -777,8 +1179,8 @@ def topic(occupancy_arn, coverage_arn, booked_arn, session_arn):
                   CellValueSynonyms=[{"CellValue": "Ground floor", "Synonyms": ["ground", "G", "floor G", "level 0"]},
                                      {"CellValue": "Floor 1", "Synonyms": ["first floor", "level 1"]},
                                      {"CellValue": "Floor 2", "Synonyms": ["second floor", "level 2"]}]),
-        dimension("room_type", "Room type", "Archibus room type, e.g. COMPUTERS, LECTURE, MEETING.",
-                  ["type of room", "room category", "space type"]),
+        room_type_dimension(),
+        ROOM_USE,
         dimension("department", "Department", "Department the room belongs to in Archibus.",
                   ["department", "school", "owner"]),
         dimension("sensor_type", "Sensor type",
@@ -805,7 +1207,8 @@ def topic(occupancy_arn, coverage_arn, booked_arn, session_arn):
                       "Number of people in the room from the door counters, at five-minute intervals. "
                       "Average it over time; add it up across rooms only at one moment.",
                       ["people", "occupancy", "headcount", "occupants", "how many people",
-                       "number of people", "count"], "AVERAGE", ["SUM"]),
+                       "number of people", "count", "footfall", "students", "staff", "sensor occupancy",
+                       "room sensor data"], "AVERAGE", ["SUM"]),
         topic_measure("utilisation_pct", "Occupancy % of capacity",
                       "People count as a percentage of the room's capacity.",
                       ["utilisation", "utilization", "how full", "occupancy rate",
@@ -891,8 +1294,7 @@ def topic(occupancy_arn, coverage_arn, booked_arn, session_arn):
     booked_columns = [
         dimension("room_id", "Room", "Room, e.g. NHHB.2.14.", ROOM_SYNONYMS),
         dimension("floor", "Floor", "Floor of the NHHB building.", ["floor", "level", "storey"]),
-        dimension("room_type", "Room type", "Archibus room type, e.g. COMPUTERS, LECTURE.",
-                  ["type of room", "space type"]),
+        room_type_dimension(),
         dimension("local_date", "Date", "UK date.", ["day", "date"], TimeGranularity="DAY"),
         dimension("weekday", "Weekday", "Day of the week, 1 Mon to 7 Sun.", ["day of week", "weekday"]),
         dimension("hour_of_day", "Hour", "Hour of the day, 0 to 23, UK local time.",
@@ -901,11 +1303,28 @@ def topic(occupancy_arn, coverage_arn, booked_arn, session_arn):
         *hidden("capacity", "observed_slots", "booked_slots", "booked_used_slots", "unbooked_slots",
                 "unbooked_used_slots", "booked_people_sum"),
     ]
+    wifi_columns = [
+        dimension("room_id", "Room", "Room with a Wi-Fi access point, e.g. NHHB.G.01 (the cafe).", ROOM_SYNONYMS),
+        dimension("floor", "Floor", "Floor of the NHHB building.", ["floor", "level", "storey"]),
+        room_type_dimension(),
+        ROOM_USE,
+        dimension("timetabled", "Timetabled", "Yes if the room appears in the TimeEdit timetable.",
+                  ["timetabled", "bookable", "in the timetable", "scheduled rooms"]),
+        dimension("local_date", "Date", "UK date.", ["day", "date"], TimeGranularity="DAY"),
+        dimension("weekday", "Weekday", "Day of the week, 1 Mon to 7 Sun.", ["day of week", "weekday"]),
+        dimension("hour_of_day", "Hour", "Hour of the day, 0 to 23, UK local time.", ["hour", "time of day"]),
+        CORE_HOURS,
+        topic_measure("devices_peak", "Peak Wi-Fi devices",
+                      "Most Wi-Fi devices connected to the room's access points in any five minutes.",
+                      ["peak Wi-Fi", "maximum Wi-Fi devices", "most devices"], "MAX", ["SUM", "AVERAGE"]),
+        *hidden("slots", "devices_sum", "wifi_in_use_slots", "booked_slots", "booked_wifi_slots"),
+    ]
     return {
         "Name": "Building Occupancy",
         "Description": "Room occupancy in the NHHB building from SMARTviz door counters and "
-                       "presence sensors, with data-quality coverage, and TimeEdit bookings "
-                       "compared with what the door counters saw.",
+                       "presence sensors, with data-quality coverage, TimeEdit bookings "
+                       "compared with what the door counters saw, and Wi-Fi devices by room "
+                       "(trial data, 21 Sep to 6 Nov 2026).",
         "UserExperienceVersion": "NEW_READER_EXPERIENCE",
         "DataSets": [
             {"DatasetArn": occupancy_arn, "DatasetName": "Room occupancy readings",
@@ -956,12 +1375,33 @@ def topic(occupancy_arn, coverage_arn, booked_arn, session_arn):
                  topic_calc("Time booked %", "Share of the time a room was booked.",
                             "sum({booked_slots}) / sum({observed_slots}) * 100",
                             ["booking rate", "how much booked", "booked share"])]},
+            {"DatasetArn": wifi_rooms_arn, "DatasetName": "Wi-Fi devices by room",
+             # The API limits a dataset description to 256 characters.
+             "DatasetDescription": "Wi-Fi devices per hour for each NHHB room with an access point, "
+                                   "21 Sep to 6 Nov 2026 (trial), and whether it was booked. Devices "
+                                   "indicate activity, not people: access points also reach corridors.",
+             "DataAggregation": {"DatasetRowDateGranularity": "HOUR", "DefaultDateColumnName": "local_date"},
+             "Columns": wifi_columns,
+             "CalculatedFields": [
+                 topic_calc("Wi-Fi devices", "Average Wi-Fi devices connected to the room's access points "
+                            "at any one time (five-minute snapshots).",
+                            "sum({devices_sum}) / sum({slots})",
+                            ["Wi-Fi occupancy", "wifi occupancy", "Wi-Fi count", "wifi counts",
+                             "Wi-Fi connections", "connections", "connected devices", "devices",
+                             "access point connections", "Wi-Fi footfall"], percent=False),
+                 topic_calc("Booked time with no Wi-Fi devices %",
+                            "Share of booked time in which no device was connected to the room's access points.",
+                            "(sum({booked_slots}) - sum({booked_wifi_slots})) / sum({booked_slots}) * 100",
+                            ["no occupants according to Wi-Fi", "empty by Wi-Fi", "booked but no Wi-Fi"]),
+                 topic_calc("Wi-Fi active time %", "Share of time with at least one device connected.",
+                            "sum({wifi_in_use_slots}) / sum({slots}) * 100",
+                            ["Wi-Fi in use", "time with Wi-Fi activity"])]},
         ],
     }
 
 
 def main(out, data_source_arn, occupancy_arn, coverage_arn, booked_arn, session_arn,
-         wifi_arn, catalog, namespace):
+         wifi_arn, wifi_rooms_arn, agreement_arn, demand_arn, catalog, namespace):
     out = Path(out)
     curated = f'"{catalog}"."{namespace}"'
     files = {
@@ -975,9 +1415,17 @@ def main(out, data_source_arn, occupancy_arn, coverage_arn, booked_arn, session_
             "booking_sessions", "booking_sessions.sql", SESSION_COLUMNS, data_source_arn, curated),
         "wifi-table.json": physical_table(
             "wifi_vs_door", "wifi_vs_door.sql", WIFI_COLUMNS, data_source_arn, curated),
+        "wifi-rooms-table.json": physical_table(
+            "wifi_rooms", "wifi_rooms.sql", WIFI_ROOMS_COLUMNS, data_source_arn, curated),
+        "agreement-table.json": physical_table(
+            "source_agreement", "source_agreement.sql", AGREEMENT_COLUMNS, data_source_arn, curated),
+        "demand-table.json": physical_table(
+            "booking_demand", "booking_demand.sql", DEMAND_COLUMNS, data_source_arn, curated),
         "occupancy-dashboard.json": dashboard(occupancy_arn, coverage_arn, booked_arn,
                                               session_arn, wifi_arn),
-        "topic.json": topic(occupancy_arn, coverage_arn, booked_arn, session_arn),
+        "agreement-dashboard.json": palettes_inside(agreement_dashboard(agreement_arn)),
+        "demand-dashboard.json": palettes_inside(demand_dashboard(demand_arn, session_arn)),
+        "topic.json": topic(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_rooms_arn),
     }
     for name, body in files.items():
         (out / name).write_text(json.dumps(body))

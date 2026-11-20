@@ -25,6 +25,11 @@ WITH rooms_latest AS (
          max(floor_code) AS floor_code,
          array_join(array_sort(array_agg(DISTINCT room_type)), ' / ') AS room_type,
          array_join(array_sort(array_agg(DISTINCT department_name)), ' / ') AS department,
+         -- Archibus room use: T teaching, S support, R research, O other.
+         array_join(array_sort(array_agg(DISTINCT
+           CASE WHEN room_use LIKE 'T%' THEN 'Teaching' WHEN room_use LIKE 'S%' THEN 'Support'
+                WHEN room_use LIKE 'R%' THEN 'Research' WHEN room_use LIKE 'O%' THEN 'Other'
+                ELSE 'Unknown' END)), ' / ') AS room_use,
          array_join(array_sort(array_agg(room_id)), ' / ') AS archibus_rooms
   FROM rooms_latest
   GROUP BY room_code
@@ -49,6 +54,7 @@ SELECT o.room_id,
             ELSE 'Floor ' || r.floor_code END AS floor,
        coalesce(r.room_type, 'Unknown') AS room_type,
        coalesce(r.department, 'Unknown') AS department,
+       coalesce(r.room_use, 'Unknown') AS room_use,
        r.archibus_rooms,
        CASE WHEN o.people_count IS NOT NULL THEN 'Door counter' ELSE 'Presence sensor' END AS sensor_type,
        o.local_at,
