@@ -546,7 +546,11 @@ curl -s -H "Authorization: Bearer ${TOKEN}" "${READ_API_URL}/rooms/NHHB-2.14"
 
 A `200` with the room's current snapshot (matching what step 4 showed)
 confirms the Cognito authorizer, the native DynamoDB integration, and the
-integration role's trust policy are all correctly wired. If a real user
+integration role's trust policy are all correctly wired. `NHHB-2.14` is the
+smoke-test room from step 2. Real Smart-Vis readings use the room list's dotted
+ids, so once they are loaded ask for `/rooms/NHHB.2.14`; an id with no reading
+returns a `404`, and a call without a token a `401`. ID tokens last 60
+minutes, and the access token is refused. If a real user
 doesn't exist yet, create one first — `AdminCreateUser` is the only way in,
 sign-up is closed:
 
