@@ -1143,6 +1143,15 @@ ROOM_TYPE_VALUES = [
 ]
 
 
+# The entrances themselves (G.04C, G.04D) have no access point or sensor; Oxford Brookes
+# agree that HDH-NHB-WAP-025, on the circulation space G.04A beside them, covers the
+# main entrance. "Foyer" is left to the ATRIUM room type.
+ENTRANCE_VALUES = [
+    {"CellValue": "NHHB.G.04A", "Synonyms": ["main entrance", "entrance", "front entrance", "entrance area",
+                                             "building entrance"]},
+]
+
+
 def room_type_dimension(description="Archibus room type, e.g. COMPUTERS, LECTURE, MEETING, DINING (the cafe)."):
     return dimension("room_type", "Room type", description,
                      ["type of room", "room category", "space type"], CellValueSynonyms=ROOM_TYPE_VALUES)
@@ -1304,7 +1313,9 @@ def topic(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_rooms_arn):
                 "unbooked_used_slots", "booked_people_sum"),
     ]
     wifi_columns = [
-        dimension("room_id", "Room", "Room with a Wi-Fi access point, e.g. NHHB.G.01 (the cafe).", ROOM_SYNONYMS),
+        dimension("room_id", "Room",
+                  "Room with a Wi-Fi access point, e.g. NHHB.G.01 (the cafe) or NHHB.G.04A (the main entrance).",
+                  ROOM_SYNONYMS, CellValueSynonyms=ENTRANCE_VALUES),
         dimension("floor", "Floor", "Floor of the NHHB building.", ["floor", "level", "storey"]),
         room_type_dimension(),
         ROOM_USE,
