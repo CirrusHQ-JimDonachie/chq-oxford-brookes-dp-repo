@@ -194,6 +194,55 @@ def test_upsert_snapshot_leaves_an_absent_value_off_the_item(stack: Stack) -> No
     assert "humidity_pct" not in _snapshot_item(stack.dynamodb)
 
 
+def _weather(client: DynamoDBClient, hour: int, temperature: str) -> bool:
+    return upsert_snapshot(
+        client,
+        STATE_TABLE,
+        entity_pk="room#NHHB-2.14",
+        entity_type="room",
+        values={
+            "reading_at": datetime(2026, 11, 2, hour, tzinfo=UTC),
+            "temperature_c": Decimal(temperature),
+        },
+        source_file=REF.key,
+        now=NOW,
+    )
+
+
+def test_upsert_snapshot_keeps_a_newer_reading_over_an_older_file(stack: Stack) -> None:
+    """A backfill delivered after a later file does not put an old reading back."""
+    assert _weather(stack.dynamodb, 22, "7.0") is True
+    assert _weather(stack.dynamodb, 9, "4.5") is False
+    item = _snapshot_item(stack.dynamodb)
+    assert item["temperature_c"]["N"] == "7.0"
+    assert item["reading_at"]["S"] == "2026-11-02T22:00:00+00:00"
+
+
+def test_upsert_snapshot_replaces_the_same_or_an_older_reading(stack: Stack) -> None:
+    """A corrected re-delivery of the same hour wins, and so does a later hour."""
+    _weather(stack.dynamodb, 9, "4.5")
+    assert _weather(stack.dynamodb, 9, "4.6") is True
+    assert _snapshot_item(stack.dynamodb)["temperature_c"]["N"] == "4.6"
+    assert _weather(stack.dynamodb, 10, "5.1") is True
+    assert _snapshot_item(stack.dynamodb)["temperature_c"]["N"] == "5.1"
+
+
+def test_upsert_snapshot_replaces_an_item_written_without_a_reading_time(
+    stack: Stack,
+) -> None:
+    """An item from a source with no reading_at never blocks a timed reading."""
+    upsert_snapshot(
+        stack.dynamodb,
+        STATE_TABLE,
+        entity_pk="room#NHHB-2.14",
+        entity_type="room",
+        values={"temperature_c": Decimal("26.2")},
+        source_file=REF.key,
+        now=NOW,
+    )
+    assert _weather(stack.dynamodb, 9, "4.5") is True
+
+
 def _claim_item(client: DynamoDBClient) -> dict[str, Any]:
     response = client.get_item(
         TableName=STATE_TABLE,

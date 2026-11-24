@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import alerting
@@ -29,7 +30,6 @@ from reasons import ReasonCode
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
-    from datetime import datetime
 
     from config import MappingConfig, ObjectRef, Settings
     from iceberg_writer import TableWriter
@@ -301,11 +301,18 @@ def _upsert_snapshots(
     mapped: Sequence[Mapping[str, object]],
     ref: ObjectRef,
 ) -> None:
-    """Write one current-state item per entity, from its last reading in the file."""
+    """Write one current-state item per entity, from its latest reading in the file.
+
+    The latest is the row with the greatest ``reading_at``, or, for a source
+    without one, the entity's last row in the file.
+    """
     latest: dict[str, Mapping[str, object]] = {}
     for row in mapped:
         entity_pk = entity_key(config, row)
-        if entity_pk is not None:
+        if entity_pk is None:
+            continue
+        held = latest.get(entity_pk)
+        if held is None or not _reads_earlier(row, held):
             latest[entity_pk] = row
     for entity_pk, row in latest.items():
         state.upsert_snapshot(
@@ -317,6 +324,12 @@ def _upsert_snapshots(
             source_file=ref.key,
             now=runtime.now,
         )
+
+
+def _reads_earlier(row: Mapping[str, object], held: Mapping[str, object]) -> bool:
+    """Whether ``row`` was read before ``held``; rows without a reading time are not."""
+    at, held_at = row.get(state.READING_TIME_FIELD), held.get(state.READING_TIME_FIELD)
+    return isinstance(at, datetime) and isinstance(held_at, datetime) and at < held_at
 
 
 def _run_alerts(

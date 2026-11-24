@@ -120,6 +120,22 @@ def test_process_object_upserts_the_snapshot_for_the_entity(
     assert item["temperature_c"]["N"] == "26.2"
 
 
+def test_process_object_snapshots_the_latest_reading_not_the_last_row(
+    stack: Stack,
+    runtime: Runtime,
+) -> None:
+    """A file whose rows are out of time order still snapshots its newest reading."""
+    put_mapping_config(stack.dynamodb)
+    later = "NHHB-2.14,1750849500000,262,55\n"
+    put_object(stack.s3, KEY, (HEADER + later + COOL_ROW).encode())
+    run(runtime)
+    item = stack.dynamodb.get_item(
+        TableName=STATE_TABLE,
+        Key={"pk": {"S": "room#NHHB-2.14"}, "sk": {"S": "snapshot"}},
+    )["Item"]
+    assert item["temperature_c"]["N"] == "26.2"
+
+
 def test_process_object_does_nothing_for_an_object_already_processed(
     stack: Stack,
     writer: RecordingWriter,

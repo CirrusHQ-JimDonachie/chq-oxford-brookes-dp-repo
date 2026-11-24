@@ -18,6 +18,13 @@ if TYPE_CHECKING:
 
 CLAIM_SORT_KEY = "claim"
 SNAPSHOT_SORT_KEY = "snapshot"
+READING_TIME_FIELD = "reading_at"
+"""Mapped field that orders an entity's snapshots, when its source has one.
+
+Every timestamp is normalised to UTC when mapped and stored as its ISO-8601
+string, so the strings sort as the instants do: within one second a whole-second
+value ("...:00+00:00") sorts before a fractional one ("...:00.5+00:00").
+"""
 TTL_ATTRIBUTE = "ttl"
 """Attribute the state table's time-to-live is configured on."""
 
@@ -262,8 +269,14 @@ def upsert_snapshot(  # noqa: PLR0913 - the key, the values, the provenance and 
     values: Mapping[str, object],
     source_file: str,
     now: datetime,
-) -> None:
-    """Write the current-state item for one entity.
+) -> bool:
+    """Write the current-state item for one entity unless it holds a newer reading.
+
+    Files can arrive out of order: a backfill delivered after a later file would
+    otherwise put an older reading back on the item. When the values carry a
+    ``reading_at``, the write is conditional on the item having no reading or one
+    no newer than this; an equal one is replaced, so a corrected re-delivery of the
+    same hour wins. Values without a ``reading_at`` always replace the item.
 
     Args:
         client: DynamoDB client.
@@ -275,6 +288,9 @@ def upsert_snapshot(  # noqa: PLR0913 - the key, the values, the provenance and 
         values: The entity's latest mapped values.
         source_file: Key of the object the values came from.
         now: Invocation timestamp stamped as the update time.
+
+    Returns:
+        True if the item was written, False if it already held a newer reading.
     """
     item: dict[str, Any] = {
         "pk": {"S": entity_pk},
@@ -287,7 +303,23 @@ def upsert_snapshot(  # noqa: PLR0913 - the key, the values, the provenance and 
         attribute = to_attribute(value)
         if attribute is not None:
             item[name] = attribute
-    client.put_item(TableName=table_name, Item=item)
+    reading_at = values.get(READING_TIME_FIELD)
+    if not isinstance(reading_at, datetime):
+        client.put_item(TableName=table_name, Item=item)
+        return True
+    try:
+        client.put_item(
+            TableName=table_name,
+            Item=item,
+            ConditionExpression="attribute_not_exists(#at) OR #at <= :at",
+            ExpressionAttributeNames={"#at": READING_TIME_FIELD},
+            ExpressionAttributeValues={":at": {"S": reading_at.isoformat()}},
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == CONDITION_FAILED:
+            return False
+        raise
+    return True
 
 
 def to_attribute(value: object) -> dict[str, Any] | None:
