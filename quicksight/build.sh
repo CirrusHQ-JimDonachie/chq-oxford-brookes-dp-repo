@@ -117,8 +117,12 @@ AGR_ID="${PREFIX}-source-agreement"
 AGR_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${AGR_ID}"
 DEM_ID="${PREFIX}-booking-demand"
 DEM_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${DEM_ID}"
+# Hourly weather at Headington Campus, one row per UK hour (the Q Topic's weather questions).
+# Site-wide, with no room, so no row-level security.
+WEA_ID="${PREFIX}-weather-hourly"
+WEA_ARN="arn:aws:quicksight:${REGION}:${ACCOUNT_ID}:dataset/${WEA_ID}"
 python3 -I "$(dirname "$0")/occupancy.py" "$TMP" "$DS_ARN" "$OCC_ARN" "$COV_ARN" \
-  "$BVA_ARN" "$SES_ARN" "$WVD_ARN" "$WRM_ARN" "$AGR_ARN" "$DEM_ARN" \
+  "$BVA_ARN" "$SES_ARN" "$WVD_ARN" "$WRM_ARN" "$AGR_ARN" "$DEM_ARN" "$WEA_ARN" \
   "s3tablescatalog/$CURATED_BUCKET" "$CURATED_NS"
 upsert_dataset "$OCC_ID" --name "Room occupancy readings" --import-mode SPICE \
   --physical-table-map "file://$TMP/occupancy-table.json" \
@@ -144,7 +148,9 @@ upsert_dataset "$AGR_ID" --name "Source agreement by hour" --import-mode SPICE \
 upsert_dataset "$DEM_ID" --name "Booking demand by hour" --import-mode SPICE \
   --physical-table-map "file://$TMP/demand-table.json" \
   --row-level-permission-data-set "file://$TMP/rls.json"
-for id in "$OCC_ID" "$COV_ID" "$BVA_ID" "$SES_ID" "$WVD_ID" "$WRM_ID" "$AGR_ID" "$DEM_ID"; do
+upsert_dataset "$WEA_ID" --name "Weather by hour" --import-mode SPICE \
+  --physical-table-map "file://$TMP/weather-table.json"
+for id in "$OCC_ID" "$COV_ID" "$BVA_ID" "$SES_ID" "$WVD_ID" "$WRM_ID" "$AGR_ID" "$DEM_ID" "$WEA_ID"; do
   hourly_refresh "$id"
 done
 
@@ -173,7 +179,7 @@ upsert_dashboard "${PREFIX}-source-agreement" "Data Source Agreement" "$TMP/agre
 upsert_dashboard "${PREFIX}-booking-pressure" "Booking Pressure" "$TMP/demand-dashboard.json"
 
 # --- Q Topic (natural-language model) -------------------------------------------------
-# The SoW's one Q Topic, modelled on the Smart-Vis occupancy, coverage, booking and Wi-Fi datasets
+# The SoW's one Q Topic, modelled on the Smart-Vis occupancy, coverage, booking, Wi-Fi and weather datasets
 # (occupancy.py writes topic.json). The topic id keeps its first name; the synthetic BMS data is no longer in it.
 TOPIC_ID="${PREFIX}-building-environmental"
 if qs describe-topic --topic-id "$TOPIC_ID" >/dev/null 2>&1; then
@@ -194,12 +200,12 @@ qs update-topic-permissions --topic-id "$TOPIC_ID" --grant-permissions "[{\"Prin
 # clock, and drop the schedule of any dataset no longer in the Topic.
 scheduled=$(qs list-topic-refresh-schedules --topic-id "$TOPIC_ID" --query 'RefreshSchedules[].DatasetArn' --output text 2>/dev/null || true)
 for arn in $scheduled; do
-  case " $OCC_ARN $COV_ARN $BVA_ARN $SES_ARN $WRM_ARN " in
+  case " $OCC_ARN $COV_ARN $BVA_ARN $SES_ARN $WRM_ARN $WEA_ARN " in
     *" $arn "*) ;;
     *) qs delete-topic-refresh-schedule --topic-id "$TOPIC_ID" --dataset-id "${arn##*/}" --query Status --output text ;;
   esac
 done
-for arn in "$OCC_ARN" "$COV_ARN" "$BVA_ARN" "$SES_ARN" "$WRM_ARN"; do
+for arn in "$OCC_ARN" "$COV_ARN" "$BVA_ARN" "$SES_ARN" "$WRM_ARN" "$WEA_ARN"; do
   case " $scheduled " in
     *" $arn "*) ;;
     *) qs create-topic-refresh-schedule --topic-id "$TOPIC_ID" --dataset-arn "$arn" \

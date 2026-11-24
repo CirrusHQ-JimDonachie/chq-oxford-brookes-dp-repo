@@ -91,6 +91,13 @@ DEMAND_COLUMNS = [
     ("booked_observed_slots", "INTEGER"), ("door_used_slots", "INTEGER"),
     ("door_peak", "DECIMAL"), ("people_sum", "DECIMAL"),
 ]
+WEATHER_COLUMNS = [
+    ("location", "STRING"), ("local_at", "DATETIME"), ("local_date", "DATETIME"),
+    ("weekday", "STRING"), ("hour_of_day", "INTEGER"), ("core_hours", "STRING"),
+    ("raining", "STRING"), ("air_temperature_c", "DECIMAL"), ("feels_like_temperature_c", "DECIMAL"),
+    ("humidity_pct", "DECIMAL"), ("precipitation_mm", "DECIMAL"), ("wind_speed_kmh", "DECIMAL"),
+    ("solar_radiation_wm2", "DECIMAL"), ("cloud_cover_pct", "DECIMAL"),
+]
 # Room periods whose Smart-Vis readings Oxford Brookes and SMARTviz could not verify:
 # kept as raw counts, flagged Provisional, and left out of every derived measure.
 # NHHB 1.15's September readings came from earlier sensors, not identified, that
@@ -1177,7 +1184,7 @@ CORE_HOURS = dimension("core_hours", "Core hours", "Yes for weekdays 08:00 to 18
                        ["working hours", "teaching hours", "office hours", "daytime"])
 
 
-def topic(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_rooms_arn):
+def topic(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_rooms_arn, weather_arn):
     occupancy_columns = [
         dimension("room_id", "Room", "Room, e.g. NHHB.2.14 (building NHHB, floor 2, room 14).",
                   ROOM_SYNONYMS),
@@ -1330,12 +1337,48 @@ def topic(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_rooms_arn):
                       ["peak Wi-Fi", "maximum Wi-Fi devices", "most devices"], "MAX", ["SUM", "AVERAGE"]),
         *hidden("slots", "devices_sum", "wifi_in_use_slots", "booked_slots", "booked_wifi_slots"),
     ]
+    weather_columns = [
+        dimension("location", "Location", "Where the weather was recorded: Headington Campus.",
+                  ["site", "campus", "weather station"]),
+        dimension("local_at", "Time", "Hour of the reading, UK local time.",
+                  ["time", "when", "hour", "timestamp"], TimeGranularity="HOUR"),
+        dimension("local_date", "Date", "UK date.", ["day", "date"], TimeGranularity="DAY"),
+        dimension("weekday", "Weekday", "Day of the week, 1 Mon to 7 Sun.", ["day of week", "weekday"]),
+        dimension("hour_of_day", "Hour", "Hour of the day, 0 to 23, UK local time.", ["hour", "time of day"]),
+        CORE_HOURS,
+        dimension("raining", "Raining", "Yes for an hour with any measurable rain (0.1 mm or more).",
+                  ["rain", "rainy", "wet", "raining", "dry"],
+                  CellValueSynonyms=[{"CellValue": "Yes", "Synonyms": ["rainy", "wet", "raining"]},
+                                     {"CellValue": "No", "Synonyms": ["dry", "no rain"]}]),
+        topic_measure("air_temperature_c", "Temperature (°C)", "Outdoor air temperature, 2 m above ground.",
+                      ["temperature", "outside temperature", "outdoor temperature", "how warm", "how cold",
+                       "temp"], "AVERAGE", ["SUM"], DefaultFormatting=ONE_DP_FORMAT),
+        topic_measure("feels_like_temperature_c", "Feels-like temperature (°C)",
+                      "Apparent temperature, taking wind and humidity into account.",
+                      ["feels like", "apparent temperature", "wind chill"], "AVERAGE", ["SUM"],
+                      DefaultFormatting=ONE_DP_FORMAT),
+        topic_measure("humidity_pct", "Outdoor humidity %", "Outdoor relative humidity.",
+                      ["humidity", "outdoor humidity", "relative humidity"], "AVERAGE", ["SUM"],
+                      DefaultFormatting=PERCENT_FORMAT),
+        topic_measure("precipitation_mm", "Rainfall (mm)", "Rain in the hour, in millimetres. Add it up "
+                      "over a day or week for the total.",
+                      ["rainfall", "precipitation", "rain", "how much rain", "mm of rain"], "SUM", [],
+                      DefaultFormatting=ONE_DP_FORMAT),
+        topic_measure("wind_speed_kmh", "Wind speed (km/h)", "Wind speed 10 m above ground.",
+                      ["wind", "wind speed", "how windy"], "AVERAGE", ["SUM"], DefaultFormatting=ONE_DP_FORMAT),
+        topic_measure("solar_radiation_wm2", "Sunshine (W/m²)", "Shortwave solar radiation reaching the ground.",
+                      ["solar radiation", "sunshine", "sun", "how sunny"], "AVERAGE", ["SUM"],
+                      DefaultFormatting=ONE_DP_FORMAT),
+        topic_measure("cloud_cover_pct", "Cloud cover %", "Share of the sky covered by cloud.",
+                      ["cloud", "cloudy", "cloud cover", "overcast"], "AVERAGE", ["SUM"],
+                      DefaultFormatting=PERCENT_FORMAT),
+    ]
     return {
         "Name": "Building Occupancy",
-        "Description": "Room occupancy in the NHHB building from SMARTviz door counters and "
-                       "presence sensors, with data-quality coverage, TimeEdit bookings "
-                       "compared with what the door counters saw, and Wi-Fi devices by room "
-                       "(trial data, 21 Sep to 6 Nov 2026).",
+        # The API limits a topic description to 256 characters.
+        "Description": "NHHB room occupancy from SMARTviz door counters and presence sensors, with "
+                       "data coverage, TimeEdit bookings against door counts, Wi-Fi devices by room "
+                       "(trial, 21 Sep to 6 Nov 2026) and hourly weather at Headington Campus.",
         "UserExperienceVersion": "NEW_READER_EXPERIENCE",
         "DataSets": [
             {"DatasetArn": occupancy_arn, "DatasetName": "Room occupancy readings",
@@ -1407,12 +1450,22 @@ def topic(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_rooms_arn):
                  topic_calc("Wi-Fi active time %", "Share of time with at least one device connected.",
                             "sum({wifi_in_use_slots}) / sum({slots}) * 100",
                             ["Wi-Fi in use", "time with Wi-Fi activity"])]},
+            {"DatasetArn": weather_arn, "DatasetName": "Weather by hour",
+             "DatasetDescription": "Hourly weather at Headington Campus from Open-Meteo, supplied by Oxford "
+                                   "Brookes: temperature, feels-like, humidity, rainfall, wind, sunshine and "
+                                   "cloud cover, in UK local time.",
+             "DataAggregation": {"DatasetRowDateGranularity": "HOUR", "DefaultDateColumnName": "local_at"},
+             "Columns": weather_columns,
+             "CalculatedFields": [topic_calc(
+                 "Rainy hours %", "Share of hours with any measurable rain.",
+                 "sum(ifelse({raining} = 'Yes', 1, 0)) / count({local_at}) * 100",
+                 ["how often it rained", "share of rainy hours", "rain frequency"])]},
         ],
     }
 
 
 def main(out, data_source_arn, occupancy_arn, coverage_arn, booked_arn, session_arn,
-         wifi_arn, wifi_rooms_arn, agreement_arn, demand_arn, catalog, namespace):
+         wifi_arn, wifi_rooms_arn, agreement_arn, demand_arn, weather_arn, catalog, namespace):
     out = Path(out)
     curated = f'"{catalog}"."{namespace}"'
     files = {
@@ -1432,11 +1485,14 @@ def main(out, data_source_arn, occupancy_arn, coverage_arn, booked_arn, session_
             "source_agreement", "source_agreement.sql", AGREEMENT_COLUMNS, data_source_arn, curated),
         "demand-table.json": physical_table(
             "booking_demand", "booking_demand.sql", DEMAND_COLUMNS, data_source_arn, curated),
+        "weather-table.json": physical_table(
+            "weather_hourly", "weather_hourly.sql", WEATHER_COLUMNS, data_source_arn, curated),
         "occupancy-dashboard.json": dashboard(occupancy_arn, coverage_arn, booked_arn,
                                               session_arn, wifi_arn),
         "agreement-dashboard.json": palettes_inside(agreement_dashboard(agreement_arn)),
         "demand-dashboard.json": palettes_inside(demand_dashboard(demand_arn, session_arn)),
-        "topic.json": topic(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_rooms_arn),
+        "topic.json": topic(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_rooms_arn,
+                            weather_arn),
     }
     for name, body in files.items():
         (out / name).write_text(json.dumps(body))
