@@ -539,18 +539,23 @@ def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_arn):
                           "SourceFilterId": "f-outcome", "Type": "MULTI_SELECT"}},
         ],
         "Visuals": [
-            kpi("b-empty", "Bookings with nobody counted",
+            # Each KPI names its unit (a booking, or a five-minute reading), because the
+            # same bookings give different shares per booking and per reading.
+            kpi("b-empty", "Bookings with nobody counted (per booking)",
                 measure("b-empty-v", ses, "empty_bookings_pct", fmt=PCT),
-                "Of bookings with sensor data for at least half their length"),
-            kpi("b-used", "Booked time in use",
+                "Counted per booking: one person at any point makes a booking used. All hours; bookings "
+                "with sensor data for at least half their length"),
+            kpi("b-used", "Booked time in use (per 5-min reading)",
                 measure("b-used-v", bva, used_booked, fmt=PCT),
-                "Share of booked five-minute readings counting anyone; weekdays 08:00-18:00"),
-            kpi("b-unbooked", "Occupied time with no booking",
+                "Share of booked five-minute readings counting anyone; weekdays 08:00-18:00. Lower than "
+                "bookings used, as late starts, early finishes and gaps count as unused time"),
+            kpi("b-unbooked", "Occupied time with no booking (per 5-min reading)",
                 measure("b-unb-v", bva, "occupied_unbooked_pct", fmt=PCT),
                 "Share of readings counting anyone that fall outside a booking; weekdays 08:00-18:00"),
-            kpi("b-booked", "Time booked",
+            kpi("b-booked", "Time booked (per 5-min reading)",
                 measure("b-bk-v", bva, "booked_time_pct", fmt=PCT),
-                "Share of readings inside a booking; weekdays 08:00-18:00"),
+                "Share of readings inside a booking; weekdays 08:00-18:00, only times with a door-counter "
+                "reading, so higher than Booking Pressure's figure over the whole timetable"),
             {"BarChartVisual": {"VisualId": "b-rooms", **title(
                 "Booked and unbooked time in use, by room",
                 "Weekdays 08:00-18:00; rooms in the TimeEdit timetable with a door counter"),
@@ -568,7 +573,7 @@ def dashboard(occupancy_arn, coverage_arn, booked_arn, session_arn, wifi_arn):
                     "Tooltip": tooltip(("br-room", "Room"), ("br-b", used_booked),
                                        ("br-u", used_unbooked))}}},
             {"BarChartVisual": {"VisualId": "b-outcomes", **title(
-                "Bookings by room and outcome",
+                "Bookings by room and outcome (per booking)",
                 "Used: anyone counted. Empty: nobody counted. No sensor data: readings for under half the booking"),
                 "ChartConfiguration": {"Orientation": "HORIZONTAL", "BarsArrangement": "STACKED",
                     "FieldWells": {"BarChartAggregatedFieldWells": {
@@ -843,7 +848,7 @@ def agreement_dashboard(agreement_arn):
             kpi("a-agree", "Hours where the sources agree",
                 measure("a-agree-v", agr, "agree_pct", fmt=PCT),
                 "Booked and in use, or not booked and empty; of hours with door-counter readings, weekdays 08:00-18:00"),
-            kpi("a-unused", "Booked, nobody detected",
+            kpi("a-unused", "Booked hours, nobody detected (per room-hour)",
                 measure("a-unused-v", agr, "Booked, nobody detected (hours)", fmt=number_format(0)),
                 "Room-hours booked for at least half the hour with nobody counted and Wi-Fi quiet or absent"),
             kpi("a-suspect", "Door count zero, Wi-Fi active",
@@ -967,11 +972,13 @@ def demand_dashboard(demand_arn, session_arn):
         "SheetId": "pressure", "Name": "Booking pressure",
         "FilterControls": controls("d", ("f-dtype", "Room type")),
         "Visuals": [
-            kpi("d-booked", "Time booked", measure("d-booked-v", dem, booked_pct, fmt=PCT),
-                "Share of room time booked in TimeEdit, NHHB timetabled rooms, weekdays 08:00-18:00, "
-                "selected dates; the timetable runs to Aug 2027, the sensors to 12 Nov 2026"),
-            kpi("d-peak", "Time in use", measure("d-peak-v", dem, in_use_counted, fmt=PCT),
-                "Share of room time with anyone counted, rooms with door counters, weekdays 08:00-18:00"),
+            kpi("d-booked", "Time booked (per 5-min slot, whole timetable)",
+                measure("d-booked-v", dem, booked_pct, fmt=PCT),
+                "Share of every five-minute slot booked in TimeEdit, all NHHB timetabled rooms, weekdays "
+                "08:00-18:00, selected dates. Holidays and future weeks count, so it is lower than Booked vs "
+                "actual's time booked; the timetable runs to Aug 2027, the sensors to 12 Nov 2026"),
+            kpi("d-peak", "Time in use (per 5-min reading)", measure("d-peak-v", dem, in_use_counted, fmt=PCT),
+                "Share of five-minute readings counting anyone, rooms with door counters, weekdays 08:00-18:00"),
             kpi("d-full", "Bookings 75% full or more",
                 measure("d-full-v", ses, "full_bookings_pct", fmt=PCT),
                 "Used bookings whose peak door count reached 75% of the room's capacity"),
@@ -1025,7 +1032,7 @@ def demand_dashboard(demand_arn, session_arn):
                     "ValueLabelOptions": labels(dem, ("dt-val", booked_pct, "% of room time booked")),
                     "Tooltip": tooltip(("dt-type", "Room type"), ("dt-val", booked_pct))}}},
             {"BarChartVisual": {"VisualId": "d-fit", **title(
-                "How full booked rooms get",
+                "How full booked rooms get (per booking)",
                 "Used bookings by the peak door count as a share of capacity"),
                 "ChartConfiguration": {"Orientation": "HORIZONTAL", "BarsArrangement": "STACKED_PERCENT",
                     "FieldWells": {"BarChartAggregatedFieldWells": {

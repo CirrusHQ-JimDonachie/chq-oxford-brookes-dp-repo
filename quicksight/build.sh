@@ -164,6 +164,17 @@ upsert_dashboard() {
     echo "updating dashboard $id"
     local v
     v=$(qs update-dashboard --dashboard-id "$id" --name "$name" --definition "file://$def" --query VersionArn --output text)
+    # A new version can only be published once QuickSight has finished creating it.
+    local status=CREATION_IN_PROGRESS tries=0
+    while [ "$status" = CREATION_IN_PROGRESS ] && [ $tries -lt 60 ]; do
+      sleep 5; tries=$((tries + 1))
+      status=$(qs describe-dashboard --dashboard-id "$id" --version-number "${v##*/}" --query Dashboard.Version.Status --output text)
+    done
+    if [ "$status" != CREATION_SUCCESSFUL ]; then
+      echo "dashboard $id version ${v##*/} is $status; not published" >&2
+      qs describe-dashboard --dashboard-id "$id" --version-number "${v##*/}" --query Dashboard.Version.Errors >&2
+      return 1
+    fi
     qs update-dashboard-published-version --dashboard-id "$id" --version-number "${v##*/}" >/dev/null
   else
     echo "creating dashboard $id"
